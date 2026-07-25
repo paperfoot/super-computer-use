@@ -1,16 +1,16 @@
 let embeddedSkill = """
 ---
-name: bgcu
-description: Background computer use on macOS — read and drive an app WITHOUT bringing it to the front or moving the user's pointer, so they keep working. Shows a teal agent cursor at each action. Use when a computer-use task would otherwise steal focus, when the built-in computer-use MCP refuses because another app is frontmost ("X is not in the allowed applications and is currently in front"), when reading a background or minimized app (WhatsApp, Mail, Notes, Messages, native apps), or for any multi-step GUI automation where batching beats one-click-per-turn. Triggers: "without taking over my screen", "in the background", "while I keep working", "don't steal focus", "bgcu".
+name: scu
+description: Fast, scriptable computer use for macOS — drive any Mac app from the CLI via the Accessibility API. ~35ms reads instead of screenshot+vision, batch whole workflows in one call, target elements by meaning not pixels, and it never steals focus or moves the pointer. Use for ANY macOS GUI automation or native-app task: reading Mail/Notes/Messages/WhatsApp, driving native apps, multi-step UI workflows, or when the built-in computer-use MCP refuses because another app is frontmost. Triggers: "computer use", "control my Mac", "read that app", "automate this app", "without taking over my screen", "scu".
 ---
 
-# bgcu — background computer use
+# scu — super computer use
 
-Binary `~/.local/bin/bgcu`; repo at `~/Code/bgcu` (Swift, no dependencies).
-Rebuild: `cd ~/Code/bgcu && make install`
+Binary `~/.local/bin/scu`; repo at `~/Code/scu` (Swift, no dependencies).
+Rebuild: `cd ~/Code/scu && make install`
 
-**Run `bgcu doctor` first if anything fails** — it names the exact permission and pane.
-`bgcu agent-info` prints the full machine-readable manifest; `bgcu help` the reference.
+**Run `scu doctor` first if anything fails** — it names the exact permission and pane.
+`scu agent-info` prints the full machine-readable manifest; `scu help` the reference.
 
 Drives one app via the Accessibility API and per-process events. The frontmost app never
 changes and the user's pointer never moves — unlike the built-in `computer-use` MCP, which
@@ -42,32 +42,32 @@ its own handle; the same ref keeps working across repeated writes.
 
 ```bash
 # read
-bgcu windows [--app NAME] [--all]        # --all includes minimized/hidden
-bgcu apps                                # running apps with pids
-bgcu axdump --pid P [--grep T] [--diff] [--actions] [--actionable] [--menus] [--enhanced]
-bgcu find --pid P --text T               # ref + index + centre + actions + path
-bgcu actions --pid P --query Q            # what this element supports
-bgcu shot --window ID --out F            # capture even when occluded; prints origin+scale
+scu windows [--app NAME] [--all]        # --all includes minimized/hidden
+scu apps                                # running apps with pids
+scu axdump --pid P [--grep T] [--diff] [--actions] [--actionable] [--menus] [--enhanced]
+scu find --pid P --text T               # ref + index + centre + actions + path
+scu actions --pid P --query Q            # what this element supports
+scu shot --window ID --out F            # capture even when occluded; prints origin+scale
 
 # act  (--no-cursor hides the overlay; --wait auto|MS|0 controls settle)
-bgcu click --pid P --query Q [--mode ax|event] [--button right] [--count 2]
-bgcu setvalue --pid P --query Q --value V
-bgcu selecttext --pid P --query Q --text T [--cursor before|after]
-bgcu type --pid P --text T
-bgcu key --pid P --key "cmd+shift+a"
-bgcu scroll --pid P --query Q --direction down [--pages N]
-bgcu drag --pid P --from-ref A --to-ref B
-bgcu perform --pid P --query Q --action AXShowMenu
+scu click --pid P --query Q [--mode ax|event] [--button right] [--count 2]
+scu setvalue --pid P --query Q --value V
+scu selecttext --pid P --query Q --text T [--cursor before|after]
+scu type --pid P --text T
+scu key --pid P --key "cmd+shift+a"
+scu scroll --pid P --query Q --direction down [--pages N]
+scu drag --pid P --from-ref A --to-ref B
+scu perform --pid P --query Q --action AXShowMenu
 
 # flow
-bgcu waitfor --pid P --text T [--gone] [--timeout S]
-bgcu batch --pid P --script F            # or pipe JSON on stdin
-bgcu settle --pid P
+scu waitfor --pid P --text T [--gone] [--timeout S]
+scu batch --pid P --script F            # or pipe JSON on stdin
+scu settle --pid P
 
 # util
-bgcu unhide --pid P                      # un-hide + un-minimize, no activation
-bgcu launch --app NAME                   # launch without stealing focus
-bgcu cursor --x X --y Y --label T
+scu unhide --pid P                      # un-hide + un-minimize, no activation
+scu launch --app NAME                   # launch without stealing focus
+scu cursor --x X --y Y --label T
 ```
 
 `--pid` can be replaced by `--app NAME` anywhere.
@@ -80,7 +80,7 @@ handled instead of silently clicking the wrong thing. It stops at the first fail
 reports which steps completed.
 
 ```bash
-cat <<'JSON' | bgcu batch --pid $PID
+cat <<'JSON' | scu batch --pid $PID
 [ {"do":"setvalue","query":"role=AXTextField;nth=0","value":"hello"},
   {"do":"key","key":"return"},
   {"do":"waitfor","text":"Results","timeout":8},
@@ -99,7 +99,7 @@ Measured: ~280ms on a simple write. `--wait 300` forces a fixed sleep; `--wait 0
 ## Errors are structured
 
 Errors go to **stderr** as `{"version":"1","status":"error","error":{code,message,suggestion}}`;
-stdout stays clean so `bgcu axdump … | jq` never breaks. Every error carries a `suggestion`
+stdout stays clean so `scu axdump … | jq` never breaks. Every error carries a `suggestion`
 that is a literal command to run.
 
 Exit codes: `0` ok, `1` transient (retry), `2` permission/config (fix setup, do not retry),
@@ -114,7 +114,7 @@ Codes to branch on: `stale_ref`, `ambiguous_ref`, `no_match`, `ambiguous_query`,
 - **`--mode event` is unreliable.** Catalyst and Electron apps silently drop per-PID
   synthetic mouse events. Default `ax` mode (AXPress) is the reliable path.
 - **`setvalue` beats `type`** for background apps — keystrokes tend to follow real focus.
-- **Minimized windows cannot receive clicks.** `bgcu unhide --pid P` first. Reading works
+- **Minimized windows cannot receive clicks.** `scu unhide --pid P` first. Reading works
   while minimized, but a captured frame can be stale; AX data stays live.
 - **Shallow tree on a modern app?** Try `--enhanced` (sets AXEnhancedUserInterface), which
   some Catalyst/wrapped-iOS apps require before publishing a full tree.
@@ -127,19 +127,19 @@ Codes to branch on: `stale_ref`, `ambiguous_ref`, `no_match`, `ambiguous_query`,
 
 | App | Behaviour | Do this |
 |---|---|---|
-| Notes, Reminders, Calendar | launch with no window; tree is just the app node | `bgcu key --key cmd+n` first |
+| Notes, Reminders, Calendar | launch with no window; tree is just the app node | `scu key --key cmd+n` first |
 | Music | sidebar rows expose no AXPress, only ShowDefaultUI/ShowAlternateUI | `perform` a listed action, or double-click |
 | Finder | actionable items expose no AXPress | use `perform`, or `--mode event` |
 | Chrome | rich tree but no AXIdentifier | target with `text~=`, not `id=` |
 | WhatsApp / Catalyst | drop per-PID synthetic mouse events | keep default `ax` mode; `setvalue` over `type` |
 
-`bgcu` distinguishes these for you: an empty tree returns `no_window`, `window_minimized`,
+`scu` distinguishes these for you: an empty tree returns `no_window`, `window_minimized`,
 `permission_denied`, or `no_ax_tree` — each with the matching fix.
 
 ## Permissions and safety
 
 Screen Recording (for `shot`) and Accessibility (everything else) must be granted to the
-**terminal running Claude Code**, not to Claude. `bgcu` inherits those grants and has no
+**terminal running Claude Code**, not to Claude. `scu` inherits those grants and has no
 per-app approval gate of its own, unlike the computer-use MCP. So: never click links from
 messages or emails, and get explicit approval before sending messages, submitting forms,
 deleting data, or any irreversible action.

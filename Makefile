@@ -1,4 +1,4 @@
-BIN     := bgcu
+BIN     := scu
 SRC     := $(wildcard src/*.swift)
 PREFIX  ?= $(HOME)/.local
 

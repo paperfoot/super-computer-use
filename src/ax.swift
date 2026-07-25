@@ -162,9 +162,9 @@ func requirePid() -> pid_t {
             }
         }
         if let h = hit { return h.processIdentifier }
-        fail("app_not_running", "no running app matches \(name)", "Run `bgcu apps` to list running apps, or `bgcu launch --app NAME` to start it.", .input)
+        fail("app_not_running", "no running app matches \(name)", "Run `scu apps` to list running apps, or `scu launch --app NAME` to start it.", .input)
     }
-    fail("bad_args", "--pid or --app required", "Run `bgcu help` for the command reference, or `bgcu agent-info` for the machine-readable manifest.", .input)
+    fail("bad_args", "--pid or --app required", "Run `scu help` for the command reference, or `scu agent-info` for the machine-readable manifest.", .input)
 }
 
 /// Reasons a target could not be resolved. Kept separate from `die` so `batch` can
@@ -175,12 +175,12 @@ struct ResolveError: Error { let code: String; let message: String }
 /// they name the exact command to run rather than describing a direction.
 func resolveSuggestion(_ code: String) -> String {
     switch code {
-    case "stale_ref":        return "Re-run `bgcu find` or `bgcu axdump` and use the fresh ref."
+    case "stale_ref":        return "Re-run `scu find` or `scu axdump` and use the fresh ref."
     case "ambiguous_ref":    return "Pass --path with one of the listed candidates, or use --query with nth=."
-    case "no_match":         return "Run `bgcu axdump` to see available elements, then widen the query."
+    case "no_match":         return "Run `scu axdump` to see available elements, then widen the query."
     case "ambiguous_query":  return "Add nth=N to pick one, or add role=/id= to narrow the query."
     case "nth_out_of_range": return "Lower nth, or drop it to see how many elements matched."
-    default:                 return "Run `bgcu axdump` for current state, then retry."
+    default:                 return "Run `scu axdump` for current state, then retry."
     }
 }
 
@@ -264,14 +264,14 @@ func resolveNode(_ pid: pid_t, refOverride: String? = nil, indexOverride: Int? =
     if let q = opt("query") {
         do { return try resolveQuery(pid, q) }
         catch let e as ResolveError { fail(e.code, e.message, resolveSuggestion(e.code), .input) }
-        catch { fail("unknown", "\(error)", "Re-run with --json for the structured error, then check `bgcu doctor`.", .transient) }
+        catch { fail("unknown", "\(error)", "Re-run with --json for the structured error, then check `scu doctor`.", .transient) }
     }
     let nodes = collectNodes(pid: pid, maxDepth: intOpt("depth", 20),
                              maxNodes: intOpt("max", 6000), includeMenus: flag("menus"))
     if let r = refOverride ?? opt("ref") {
         let hits = nodes.filter { $0.ref == r }
         if hits.isEmpty {
-            fail("stale_ref", "ref \(r) no longer present — re-run find/axdump for current state", "Re-run `bgcu find` or `bgcu axdump` and use the fresh ref.", .input)
+            fail("stale_ref", "ref \(r) no longer present — re-run find/axdump for current state", "Re-run `scu find` or `scu axdump` and use the fresh ref.", .input)
         }
         if hits.count > 1 {
             // Disambiguate by tree path when the caller supplied one.
@@ -281,10 +281,10 @@ func resolveNode(_ pid: pid_t, refOverride: String? = nil, indexOverride: Int? =
         return hits[0]
     }
     guard let idx = indexOverride ?? Int(opt("index") ?? "") else {
-        fail("bad_args", "--ref (preferred) or --index required", "Run `bgcu help` for the command reference, or `bgcu agent-info` for the machine-readable manifest.", .input)
+        fail("bad_args", "--ref (preferred) or --index required", "Run `scu help` for the command reference, or `scu agent-info` for the machine-readable manifest.", .input)
     }
     guard idx >= 0 && idx < nodes.count else {
-        fail("index_out_of_range", "index \(idx) not in 0..<\(nodes.count) — UI likely changed; re-dump", "The tree changed. Re-run `bgcu axdump` and use a current index, or switch to --query.", .input)
+        fail("index_out_of_range", "index \(idx) not in 0..<\(nodes.count) — UI likely changed; re-dump", "The tree changed. Re-run `scu axdump` and use a current index, or switch to --query.", .input)
     }
     return nodes[idx]
 }
@@ -518,7 +518,7 @@ func listWindows(all: Bool) -> [WinInfo] {
 
 func cacheDir() -> URL {
     let u = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Caches/bgcu", isDirectory: true)
+        .appendingPathComponent("Library/Caches/scu", isDirectory: true)
     try? FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)
     return u
 }

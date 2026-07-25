@@ -1,7 +1,7 @@
 // Output contract: two audiences, one stdout.
 //
 // Humans get plain text on a TTY; agents get a JSON envelope when piped or when --json
-// is passed. Errors always go to stderr so `bgcu axdump … | jq` never breaks on an error.
+// is passed. Errors always go to stderr so `scu axdump … | jq` never breaks on an error.
 
 import Foundation
 

@@ -9,8 +9,8 @@ attribute. Every quirk you document saves the next person an afternoon.
 If an app misbehaves, open an issue with:
 
 ```bash
-bgcu doctor
-bgcu axdump --app "That App" --actions --max 200
+scu doctor
+scu axdump --app "That App" --actions --max 200
 ```
 
 Include what you expected and what happened. That's enough to turn it into a documented
@@ -19,14 +19,14 @@ workaround or a code fix.
 ## Building
 
 ```bash
-git clone https://github.com/paperfoot/bgcu && cd bgcu
-make            # builds ./bgcu
+git clone https://github.com/paperfoot/scu && cd scu
+make            # builds ./scu
 make test       # regression suite, drives a real TextEdit window
 make conform    # agent-cli-framework conformance probe
 ```
 
 Both suites must pass before a PR merges. `make test` needs Accessibility granted to your
-terminal; run `bgcu doctor` if it complains.
+terminal; run `scu doctor` if it complains.
 
 ## Code layout
 

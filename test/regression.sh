@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Regression suite for bgcu.
+# Regression suite for scu.
 #
 # Drives a real app (TextEdit) in the background and asserts both behaviour and the
 # output contract. Verifies the frontmost application never changes — that is the whole
 # premise of the tool, so it is checked before and after the run.
 #
-# Usage: test/regression.sh [path-to-binary]     (default ./bgcu)
+# Usage: test/regression.sh [path-to-binary]     (default ./scu)
 # Requires: bash, python3, osascript. Exit 0 = all passed.
 
 set -u
-BIN="${1:-./bgcu}"
+BIN="${1:-./scu}"
 [ -x "$BIN" ] || { echo "no binary at $BIN — run make first"; exit 2; }
 
 PASS=0; FAIL=0
@@ -27,7 +27,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 echo "== setup =="
 # A dedicated document keeps the suite from touching anything the user cares about.
-echo "seed" > "$WORK/bgcu-test.txt"
+echo "seed" > "$WORK/scu-test.txt"
 
 # Wait out a TextEdit left quitting by a previous run, otherwise `open` reattaches to a
 # dying process and every app-driven assertion fails for the wrong reason.
@@ -36,21 +36,26 @@ for _ in $(seq 1 20); do
   sleep 0.5
 done
 
-open -g -a TextEdit "$WORK/bgcu-test.txt" 2>/dev/null
-
-# Poll until the document window is actually readable rather than sleeping a guess.
+# Poll until the document window is genuinely readable rather than sleeping a guess.
+# If a stale process never becomes readable, relaunch instead of burning the whole
+# timeout — reattaching to a dying TextEdit is what made this suite flaky.
 PID=""
-for _ in $(seq 1 30); do
-  CAND=$(pgrep -x TextEdit | head -1)
-  if [ -n "$CAND" ] && "$BIN" axdump --pid "$CAND" 2>/dev/null | grep -q TextArea; then
-    PID="$CAND"; break
-  fi
-  sleep 0.5
+for attempt in 1 2 3; do
+  open -g -a TextEdit "$WORK/scu-test.txt" 2>/dev/null
+  for _ in $(seq 1 16); do
+    CAND=$(pgrep -x TextEdit | head -1)
+    if [ -n "$CAND" ] && "$BIN" axdump --pid "$CAND" 2>/dev/null | grep -q TextArea; then
+      PID="$CAND"; break
+    fi
+    sleep 0.5
+  done
+  [ -n "$PID" ] && break
+  [ "$attempt" -lt 3 ] && echo "  (TextEdit not ready, relaunching — attempt $attempt of 3)"
 done
 if [ -n "$PID" ]; then
   pass "TextEdit ready (pid $PID)"
 else
-  fail "TextEdit did not become ready within 15s"
+  fail "TextEdit did not become ready after 3 attempts"
   echo "  (app-driven tests will be skipped)"
 fi
 

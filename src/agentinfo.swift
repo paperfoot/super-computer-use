@@ -1,11 +1,11 @@
 // agent-info — the capability manifest.
 //
 // This is a tested contract, not documentation: every command listed here must be
-// routable and every flag must exist. `bgcu contract --selftest` verifies it.
+// routable and every flag must exist. `scu contract --selftest` verifies it.
 
 import Foundation
 
-let bgcuVersion = "1.0.0"
+let scuVersion = "1.0.0"
 
 /// Command name -> (description, args, options). Options are [name, type, required,
 /// default, description] tuples flattened into the manifest shape the framework defines.
@@ -144,7 +144,7 @@ func emitAgentInfo() -> Never {
     }.joined(separator: ",")
 
     print("""
-    {"name":"bgcu","version":\(jstr(bgcuVersion)),\
+    {"name":"scu","version":\(jstr(scuVersion)),\
     "description":"Background macOS UI automation: read and drive apps without stealing focus or moving the pointer",\
     "commands":{\(cmds.joined(separator: ","))},\
     "global_flags":{\(globals)},\
@@ -154,21 +154,21 @@ func emitAgentInfo() -> Never {
     "4":"Rate limited -- wait and retry"},\
     "envelope":{"version":"1","success":"{ version, status, data }",\
     "error":"{ version, status, error: { code, message, suggestion } }"},\
-    "config":{"path":"~/Library/Caches/bgcu","env_prefix":"BGCU_"},\
+    "config":{"path":"~/Library/Caches/scu","env_prefix":"BGCU_"},\
     "auto_json_when_piped":true}
     """)
     exit(Exit.ok.rawValue)
 }
 
 let helpText = """
-bgcu \(bgcuVersion) — background macOS UI automation
+scu \(scuVersion) — background macOS UI automation
 
 Reads and drives one app through the Accessibility API without bringing it to the
 front or moving your pointer. Each action flashes a teal agent cursor so you can see
 what it touched.
 
 USAGE
-  bgcu <command> [--pid P | --app NAME] [options]
+  scu <command> [--pid P | --app NAME] [options]
 
 READ
   windows [--all]                  list windows; --all includes minimized
@@ -208,8 +208,8 @@ TARGETING — prefer query over ref over index
   Query keys: role= id= text~= text== title= nth= actionable
 
 Tips:
-  Run `bgcu doctor` first — permissions are the number one failure mode, and they are
-    granted to your terminal application, not to bgcu.
+  Run `scu doctor` first — permissions are the number one failure mode, and they are
+    granted to your terminal application, not to scu.
   Prefer `axdump`/`find` over `shot`: reading the tree takes ~35ms and is exact,
     while a screenshot costs a vision round-trip.
   Use `batch` for anything multi-step. Model round-trips dominate cost, not execution.
@@ -219,15 +219,15 @@ Tips:
   Minimized windows cannot receive clicks: run `unhide` first.
 
 Examples:
-  bgcu doctor
-  bgcu apps
-  bgcu find --app Notes --text "Shopping"
-  bgcu click --app Notes --query 'role=AXButton;text~=New Note'
-  bgcu setvalue --app Notes --query 'role=AXTextArea;nth=0' --value "milk, eggs"
-  bgcu waitfor --app Safari --text "Sign in" --timeout 15
+  scu doctor
+  scu apps
+  scu find --app Notes --text "Shopping"
+  scu click --app Notes --query 'role=AXButton;text~=New Note'
+  scu setvalue --app Notes --query 'role=AXTextArea;nth=0' --value "milk, eggs"
+  scu waitfor --app Safari --text "Sign in" --timeout 15
   echo '[{"do":"setvalue","query":"role=AXTextField;nth=0","value":"hi"},
         {"do":"key","key":"return"},
-        {"do":"waitfor","text":"Sent"}]' | bgcu batch --app Messages
+        {"do":"waitfor","text":"Sent"}]' | scu batch --app Messages
 
 EXIT CODES
   0 success   1 transient, retry   2 config/permission, fix setup

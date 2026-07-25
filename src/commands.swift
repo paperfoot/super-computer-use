@@ -9,21 +9,21 @@ import ApplicationServices
 func actionSuggestion(_ code: String) -> String {
     switch code {
     case "press_failed":
-        return "Run `bgcu actions --ref …` to see supported actions, then `bgcu perform --action NAME`. If the app ignores AX, try --mode event."
+        return "Run `scu actions --ref …` to see supported actions, then `scu perform --action NAME`. If the app ignores AX, try --mode event."
     case "setvalue_failed":
-        return "The element is probably read-only. Click it first, then use `bgcu type --text …`."
+        return "The element is probably read-only. Click it first, then use `scu type --text …`."
     case "select_failed", "no_value", "text_not_found":
-        return "Confirm the element holds that text with `bgcu axdump --grep …` before selecting."
+        return "Confirm the element holds that text with `scu axdump --grep …` before selecting."
     case "unknown_key":
         return "Use a key name such as return, tab, escape, up, or a chord like cmd+shift+a."
     case "no_geometry":
-        return "The element has no on-screen position. Target a visible child — see `bgcu axdump`."
+        return "The element has no on-screen position. Target a visible child — see `scu axdump`."
     case "timeout":
-        return "Raise --timeout, or verify the expected text with `bgcu axdump --grep …`."
+        return "Raise --timeout, or verify the expected text with `scu axdump --grep …`."
     case "bad_script", "unknown_step":
         return "Pass a JSON array of steps, e.g. [{\"do\":\"click\",\"query\":\"role=AXButton;nth=0\"}]."
     default:
-        return "Run `bgcu doctor` to verify permissions, then retry."
+        return "Run `scu doctor` to verify permissions, then retry."
     }
 }
 
@@ -51,7 +51,7 @@ func guarded<T>(_ body: () throws -> T) -> T {
         hideAgentCursor(); fail(e.code, e.message, resolveSuggestion(e.code), .input)
     }
     catch {
-        hideAgentCursor(); fail("unknown", "\(error)", "Run `bgcu doctor`, then retry.", .transient)
+        hideAgentCursor(); fail("unknown", "\(error)", "Run `scu doctor`, then retry.", .transient)
     }
 }
 
@@ -71,7 +71,7 @@ func afterAction(_ pid: pid_t, _ extra: [(String, Any)] = []) -> Never {
 func diagnoseEmptyTree(_ pid: pid_t) -> Never {
     if !AXIsProcessTrusted() {
         fail("permission_denied", "Accessibility is not granted to this terminal",
-             "Run `bgcu doctor` for the exact steps, then restart your terminal.", .config)
+             "Run `scu doctor` for the exact steps, then restart your terminal.", .config)
     }
     let app = AXUIElementCreateApplication(pid)
     let wins = (axAttr(app, kAXWindowsAttribute as String) as? [AXUIElement]) ?? []
@@ -81,15 +81,15 @@ func diagnoseEmptyTree(_ pid: pid_t) -> Never {
         let minimized = listWindows(all: true).filter { $0.pid == pid }
         if !minimized.isEmpty {
             fail("window_minimized", "\(name) has no open window; \(minimized.count) minimized or off-screen",
-                 "Run `bgcu unhide --pid \(pid)` to restore it, then retry.", .transient)
+                 "Run `scu unhide --pid \(pid)` to restore it, then retry.", .transient)
         }
         fail("no_window", "\(name) is running but has no open window",
-             "Open a window first — e.g. `bgcu key --pid \(pid) --key cmd+n`, or click its Dock icon. "
+             "Open a window first — e.g. `scu key --pid \(pid) --key cmd+n`, or click its Dock icon. "
              + "Background-launched apps often start with no window.", .transient)
     }
     fail("no_ax_tree", "\(name) exposes a window but no readable accessibility tree",
-         "Try `bgcu axdump --pid \(pid) --enhanced`. If that is still empty, the app does not "
-         + "publish AX data — fall back to `bgcu shot --window …` and read it visually.", .transient)
+         "Try `scu axdump --pid \(pid) --enhanced`. If that is still empty, the app does not "
+         + "publish AX data — fall back to `scu shot --window …` and read it visually.", .transient)
 }
 
 // MARK: - read
@@ -170,7 +170,7 @@ func cmdFind() -> Never {
     guard let needle = opt("text")?.lowercased(), !needle.isEmpty else {
         // Swift's contains("") is false, so an empty needle would silently match nothing.
         fail("bad_args", "--text must be a non-empty string",
-             "Example: bgcu find --app Notes --text \"Shopping\". To list everything, use `bgcu axdump`.", .input)
+             "Example: scu find --app Notes --text \"Shopping\". To list everything, use `scu axdump`.", .input)
     }
     let nodes = collectNodes(pid: pid, maxDepth: intOpt("depth", 20),
                              maxNodes: intOpt("max", 6000), includeMenus: flag("menus"))
@@ -216,7 +216,7 @@ func cmdClick() -> Never {
         pt = CGPoint(x: x, y: y)
     } else {
         fail("bad_args", "No target given",
-             "Pass --query 'role=AXButton;nth=0', or --ref from `bgcu find`, or --x/--y.", .input)
+             "Pass --query 'role=AXButton;nth=0', or --ref from `scu find`, or --x/--y.", .input)
     }
     flash(pt, label)
 
@@ -231,7 +231,7 @@ func cmdClick() -> Never {
             guard e == .success, let f = found else {
                 hideAgentCursor()
                 fail("hit_test_failed", "No element at \(Int(p.x)),\(Int(p.y)) (AX error \(e.rawValue))",
-                     "Check the coordinate against `bgcu axdump`, or target by --query instead.", .input)
+                     "Check the coordinate against `scu axdump`, or target by --query instead.", .input)
             }
             guarded { try pressElement(Node(el: f, index: -1,
                 role: axStr(f, kAXRoleAttribute as String) ?? "?", ident: "", title: "", value: "",
@@ -252,7 +252,7 @@ func cmdSetValue() -> Never {
     let pid = requirePid()
     guard let v = opt("value") else {
         fail("bad_args", "--value is required",
-             "Example: bgcu setvalue --query 'role=AXTextField;nth=0' --value hello", .input)
+             "Example: scu setvalue --query 'role=AXTextField;nth=0' --value hello", .input)
     }
     let n = resolveNode(pid)
     flash(n.centre, "set value")
@@ -264,7 +264,7 @@ func cmdSelectText() -> Never {
     let pid = requirePid()
     guard let t = opt("text") else {
         fail("bad_args", "--text is required",
-             "Example: bgcu selecttext --query 'role=AXTextArea' --text hello", .input)
+             "Example: scu selecttext --query 'role=AXTextArea' --text hello", .input)
     }
     let n = resolveNode(pid)
     flash(n.centre, "select")
@@ -276,7 +276,7 @@ func cmdSelectText() -> Never {
 func cmdType() -> Never {
     let pid = requirePid()
     guard let t = opt("text") else {
-        fail("bad_args", "--text is required", "Example: bgcu type --app Notes --text \"hello\"", .input)
+        fail("bad_args", "--text is required", "Example: scu type --app Notes --text \"hello\"", .input)
     }
     typeText(pid: pid, text: t)
     afterAction(pid)
@@ -286,7 +286,7 @@ func cmdKey() -> Never {
     let pid = requirePid()
     guard let k = opt("key") else {
         fail("bad_args", "--key is required",
-             "Example: bgcu key --key return, or --key cmd+shift+a", .input)
+             "Example: scu key --key return, or --key cmd+shift+a", .input)
     }
     guarded { try sendKey(pid: pid, chord: k) }
     afterAction(pid)
@@ -301,7 +301,7 @@ func cmdScroll() -> Never {
     let n = resolveNode(pid)
     guard let c = n.centre else {
         fail("no_geometry", "Element \(n.ref) has no on-screen position",
-             "Target a visible child instead — see `bgcu axdump`.", .input)
+             "Target a visible child instead — see `scu axdump`.", .input)
     }
     flash(c, "scroll \(dir)")
     // An element's own AX scroll action is more reliable than wheel events in the background.
@@ -338,7 +338,7 @@ func cmdPerform() -> Never {
     let pid = requirePid()
     guard let a = opt("action") else {
         fail("bad_args", "--action is required",
-             "Run `bgcu actions --query …` to list what the element supports.", .input)
+             "Run `scu actions --query …` to list what the element supports.", .input)
     }
     let n = resolveNode(pid)
     flash(n.centre, a.replacingOccurrences(of: "AX", with: ""))
@@ -347,7 +347,7 @@ func cmdPerform() -> Never {
         hideAgentCursor()
         let avail = axActions(n.el)
         fail("action_failed", "\(a) rejected by \(n.ref) (AX error \(e.rawValue))",
-             avail.isEmpty ? "This element exposes no actions; target a different one via `bgcu axdump --actionable`."
+             avail.isEmpty ? "This element exposes no actions; target a different one via `scu axdump --actionable`."
                            : "Supported here: \(avail.joined(separator: ", ")). Pick one of those.", .transient)
     }
     afterAction(pid)
@@ -363,7 +363,7 @@ func cmdWaitFor() -> Never {
     let wantRef = opt("ref")
     if needle == nil && wantRef == nil {
         fail("bad_args", "waitfor needs --text or --ref",
-             "Example: bgcu waitfor --app Safari --text \"Sign in\" --timeout 15", .input)
+             "Example: scu waitfor --app Safari --text \"Sign in\" --timeout 15", .input)
     }
     let start = Date()
     while Date().timeIntervalSince(start) < timeout {
@@ -382,8 +382,8 @@ func cmdWaitFor() -> Never {
         usleep(250_000)
     }
     fail("timeout", "Condition not met within \(Int(timeout))s",
-         wantGone ? "The element is still present. Raise --timeout, or check with `bgcu axdump --grep …`."
-                  : "Raise --timeout, or verify the expected text with `bgcu axdump --grep …`.", .transient)
+         wantGone ? "The element is still present. Raise --timeout, or check with `scu axdump --grep …`."
+                  : "Raise --timeout, or verify the expected text with `scu axdump --grep …`.", .transient)
 }
 
 func cmdSettle() -> Never {
@@ -491,14 +491,14 @@ func cmdBatch() -> Never {
 
 func cmdShot() -> Never {
     guard let outPath = opt("out") else {
-        fail("bad_args", "--out is required", "Example: bgcu shot --window 1234 --out /tmp/win.png", .input)
+        fail("bad_args", "--out is required", "Example: scu shot --window 1234 --out /tmp/win.png", .input)
     }
     guard let idStr = opt("window"), let id = UInt32(idStr) else {
-        fail("bad_args", "--window is required", "Run `bgcu windows` to list window ids.", .input)
+        fail("bad_args", "--window is required", "Run `scu windows` to list window ids.", .input)
     }
     if !CGPreflightScreenCaptureAccess() {
         fail("permission_denied", "Screen Recording is not granted",
-             "Run `bgcu doctor` for the exact steps: System Settings > Privacy & Security > "
+             "Run `scu doctor` for the exact steps: System Settings > Privacy & Security > "
              + "Screen & System Audio Recording, enable your terminal, then quit and reopen it.", .config)
     }
     let p = Process()
@@ -507,8 +507,8 @@ func cmdShot() -> Never {
     try? p.run(); p.waitUntilExit()
     guard p.terminationStatus == 0, FileManager.default.fileExists(atPath: outPath) else {
         fail("capture_failed", "screencapture produced no image for window \(id)",
-             "Confirm the id with `bgcu windows --all`. A minimized window can return a stale frame; "
-             + "run `bgcu unhide` first.", .transient)
+             "Confirm the id with `scu windows --all`. A minimized window can return a stale frame; "
+             + "run `scu unhide` first.", .transient)
     }
     let attrs = try? FileManager.default.attributesOfItem(atPath: outPath)
     let bytes = (attrs?[.size] as? Int) ?? 0
@@ -530,7 +530,7 @@ func cmdShot() -> Never {
 func cmdUnhide() -> Never {
     let pid = requirePid()
     guard let r = NSRunningApplication(processIdentifier: pid) else {
-        fail("app_not_running", "No process with pid \(pid)", "Run `bgcu apps` to list running apps.", .input)
+        fail("app_not_running", "No process with pid \(pid)", "Run `scu apps` to list running apps.", .input)
     }
     let wasHidden = r.isHidden
     if !r.unhide() {
@@ -551,7 +551,7 @@ func cmdUnhide() -> Never {
 
 func cmdLaunch() -> Never {
     guard let name = opt("app") else {
-        fail("bad_args", "--app is required", "Example: bgcu launch --app Notes", .input)
+        fail("bad_args", "--app is required", "Example: scu launch --app Notes", .input)
     }
     let ws = NSWorkspace.shared
     let candidates = ["/Applications/\(name).app", "/System/Applications/\(name).app",
@@ -576,7 +576,7 @@ func cmdLaunch() -> Never {
     usleep(600_000)
     if got <= 0 {
         fail("launch_failed", "Launch of '\(name)' did not report a pid",
-             "Check whether it opened with `bgcu apps`; some apps exceed 15s on first run.", .transient)
+             "Check whether it opened with `scu apps`; some apps exceed 15s on first run.", .transient)
     }
     emit([("ok", true as Any), ("pid", Int(got) as Any), ("path", url.path as Any)] as [(String, Any)])
 }
@@ -584,7 +584,7 @@ func cmdLaunch() -> Never {
 func cmdCursor() -> Never {
     guard let x = Double(opt("x") ?? ""), let y = Double(opt("y") ?? "") else {
         fail("bad_args", "--x and --y are required",
-             "Example: bgcu cursor --x 800 --y 400 --label \"here\"", .input)
+             "Example: scu cursor --x 800 --y 400 --label \"here\"", .input)
     }
     showAgentCursor(at: CGPoint(x: x, y: y), label: opt("label") ?? "",
                     hold: Double(opt("hold") ?? "") ?? 0.75)
@@ -597,8 +597,8 @@ func cmdCursor() -> Never {
 /// The skill ships inside the binary so the tool stays self-contained.
 func runSkillInstall() -> Never {
     let targets = opt("path").map { [$0] } ?? [
-        NSHomeDirectory() + "/.claude/skills/bgcu",
-        NSHomeDirectory() + "/.config/opencode/skills/bgcu",
+        NSHomeDirectory() + "/.claude/skills/scu",
+        NSHomeDirectory() + "/.config/opencode/skills/scu",
     ]
     var written: [Any] = []
     for dir in targets {
@@ -619,7 +619,7 @@ func runSkillInstall() -> Never {
     }
     if written.isEmpty {
         fail("no_targets", "No agent platform directories found",
-             "Pass --path explicitly, e.g. bgcu skill install --path ~/.claude/skills/bgcu", .config)
+             "Pass --path explicitly, e.g. scu skill install --path ~/.claude/skills/scu", .config)
     }
     emit([("ok", true as Any), ("installed", written as Any)] as [(String, Any)]) {
         "Installed skill to:\n" + written.map { "  \($0)" }.joined(separator: "\n")
@@ -630,10 +630,10 @@ func runSkillInstall() -> Never {
 
 /// Lets the framework conformance script probe each exit code without side effects.
 func runContractHook() -> Never {
-    // The framework's probe calls `bgcu contract <code>` positionally.
+    // The framework's probe calls `scu contract <code>` positionally.
     switch args.first ?? opt("code") ?? "0" {
     case "1": fail("transient_probe", "Simulated transient failure", "Retry with backoff.", .transient)
-    case "2": fail("config_probe", "Simulated config failure", "Run `bgcu doctor`.", .config)
+    case "2": fail("config_probe", "Simulated config failure", "Run `scu doctor`.", .config)
     case "3": fail("input_probe", "Simulated bad input", "Fix the arguments.", .input)
     case "4": fail("rate_probe", "Simulated rate limit", "Wait, then retry.", .rateLimited)
     default:  emit([("ok", true as Any)] as [(String, Any)])

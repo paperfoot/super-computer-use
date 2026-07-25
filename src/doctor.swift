@@ -1,9 +1,9 @@
-// doctor — diagnose the two macOS permissions bgcu cannot work without.
+// doctor — diagnose the two macOS permissions scu cannot work without.
 //
 // This is the single most valuable command in the tool. Without Accessibility, every
 // action fails with an opaque AX error code; without Screen Recording, `shot` silently
 // produces a desktop-wallpaper image instead of the window. Both are granted to the
-// *terminal application running bgcu*, not to bgcu itself, which is the part everyone
+// *terminal application running scu*, not to scu itself, which is the part everyone
 // gets wrong.
 
 import Cocoa
@@ -84,14 +84,14 @@ func runDoctor() -> Never {
 
     // 5. Cache directory must be writable for --diff.
     let cache = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Caches/bgcu", isDirectory: true)
+        .appendingPathComponent("Library/Caches/scu", isDirectory: true)
     try? FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
     let cacheOK = FileManager.default.isWritableFile(atPath: cache.path)
     checks.append(Check(
         name: "cache_writable",
         ok: cacheOK,
         detail: cacheOK ? cache.path : "cannot write \(cache.path)",
-        fix: "Run: mkdir -p ~/Library/Caches/bgcu && chmod u+rwx ~/Library/Caches/bgcu"))
+        fix: "Run: mkdir -p ~/Library/Caches/scu && chmod u+rwx ~/Library/Caches/scu"))
 
     // Accessibility and the live probe are hard requirements; the rest degrade gracefully.
     let blocking = checks.filter { !$0.ok && ($0.name == "accessibility" || $0.name == "ax_live_probe") }
@@ -107,7 +107,7 @@ func runDoctor() -> Never {
         ]
         print("{\"version\":\"1\",\"status\":\(jstr(healthy ? "success" : "partial_success")),\"data\":\(jval(payload))}")
     } else {
-        print("bgcu doctor — permissions are granted to: \(host)\n")
+        print("scu doctor — permissions are granted to: \(host)\n")
         for c in checks {
             print("  \(c.ok ? "✓" : "✗") \(c.name): \(c.detail)")
             if !c.ok { print("      fix: \(c.fix)") }

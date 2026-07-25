@@ -1,4 +1,4 @@
-// bgcu — background macOS UI automation.
+// scu — background macOS UI automation.
 //
 // Entry point only: parse global flags, detect output format, dispatch, exit.
 // Command bodies live in commands.swift; the AX layer in ax.swift.
@@ -21,13 +21,13 @@ if rawArgs.contains("--help") || rawArgs.contains("-h") || rawArgs.first == "hel
     emitText(helpText, key: "usage")
 }
 if rawArgs.contains("--version") || rawArgs.contains("-V") || rawArgs.first == "version" {
-    if ctx.isJSON { emit([("name", "bgcu"), ("version", bgcuVersion)] as [(String, Any)]) }
-    emitText("bgcu \(bgcuVersion)")
+    if ctx.isJSON { emit([("name", "scu"), ("version", scuVersion)] as [(String, Any)]) }
+    emitText("scu \(scuVersion)")
 }
 
 guard let cmd = rawArgs.first, !cmd.hasPrefix("-") else {
     fail("bad_args", "No command given",
-         "Run `bgcu help` for the command reference, or `bgcu agent-info` for the manifest.", .input)
+         "Run `scu help` for the command reference, or `scu agent-info` for the manifest.", .input)
 }
 
 // Everything after the command name; `opt`/`flag` in args.swift read this.
@@ -72,9 +72,9 @@ case "unhide":                 cmdUnhide()
 case "launch":                 cmdLaunch()
 case "cursor":                 cmdCursor()
 case "skill":
-    fail("bad_args", "`skill` needs a subcommand", "Run `bgcu skill install`.", .input)
+    fail("bad_args", "`skill` needs a subcommand", "Run `scu skill install`.", .input)
 default:
     fail("unknown_command", "No such command '\(cmd)'",
-         "Run `bgcu help` for the command list, or `bgcu agent-info` for the machine-readable manifest.",
+         "Run `scu help` for the command list, or `scu agent-info` for the machine-readable manifest.",
          .input)
 }
