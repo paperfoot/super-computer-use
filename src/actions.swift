@@ -37,11 +37,22 @@ func pressElement(_ n: Node) throws {
 /// Synthetic clicks. `postToPid` keeps the event out of the global stream so the user's
 /// focus is untouched — but Catalyst/Electron apps frequently drop them, which is why
 /// AXPress is the default path.
-func synthClick(pid: pid_t, at p: CGPoint, button: String, count: Int) {
+func synthClick(pid: pid_t, at p: CGPoint, button: String, count: Int, windowID: CGWindowID? = nil) {
     let (dn, up): (CGEventType, CGEventType) = button == "right"
         ? (.rightMouseDown, .rightMouseUp)
         : (button == "middle" ? (.otherMouseDown, .otherMouseUp) : (.leftMouseDown, .leftMouseUp))
     let b: CGMouseButton = button == "right" ? .right : (button == "middle" ? .center : .left)
+
+    // A CGEvent built from scratch carries no window routing, so AppKit has to infer the
+    // target — which is where Catalyst and Electron apps tend to drop the event. Filling
+    // the window number and marking the event as window-targeted (subtype 3) gives the
+    // same routing a real click carries. Additive: these fields were previously zero.
+    func route(_ e: CGEvent) {
+        guard let wid = windowID else { return }
+        e.setIntegerValueField(CGEventField(rawValue: 91)!, value: Int64(wid))   // window number
+        e.setIntegerValueField(CGEventField(rawValue: 89)!, value: 3)            // subtype: window
+    }
+
     for i in 1...max(1, count) {
         guard let d = CGEvent(mouseEventSource: nil, mouseType: dn, mouseCursorPosition: p, mouseButton: b),
               let u = CGEvent(mouseEventSource: nil, mouseType: up, mouseCursorPosition: p, mouseButton: b)
@@ -49,9 +60,15 @@ func synthClick(pid: pid_t, at p: CGPoint, button: String, count: Int) {
         // clickState drives double/triple-click recognition in AppKit.
         d.setIntegerValueField(.mouseEventClickState, value: Int64(i))
         u.setIntegerValueField(.mouseEventClickState, value: Int64(i))
+        route(d); route(u)
         d.postToPid(pid); usleep(40_000); u.postToPid(pid)
         if i < count { usleep(60_000) }
     }
+}
+
+/// Front-most window of a process, used to route synthetic clicks.
+func frontWindowID(for pid: pid_t) -> CGWindowID? {
+    listWindows(all: false).first { $0.pid == pid }?.id
 }
 
 /// Key chords like "cmd+shift+a" or bare names like "return".

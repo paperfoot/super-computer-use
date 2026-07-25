@@ -74,6 +74,9 @@ func afterAction(_ pid: pid_t, before: String? = nil, _ extra: [(String, Any)] =
 /// Refuse predictable no-ops before acting, with the fix in the error.
 func preflight(_ n: Node, _ pid: pid_t, typing: Bool = false) {
     if flag("no-check") { return }
+    // Bring the target into its scroll container's viewport first; a row scrolled out of
+    // sight has valid geometry but may not react. Harmless where unsupported.
+    _ = AXUIElementPerformAction(n.el, "AXScrollToVisible" as CFString)
     let a = checkActionable(n, pid: pid, forTyping: typing)
     if !a.ok {
         hideAgentCursor()
@@ -256,7 +259,7 @@ func cmdClick() -> Never {
             }
             guarded { try pressElement(Node(el: f, index: -1,
                 role: axStr(f, kAXRoleAttribute as String) ?? "?", ident: "", title: "", value: "",
-                desc: "", pos: nil, size: nil, path: "", actionable: true)) }
+                desc: "", pos: nil, size: nil, path: "", actionable: true, window: "")) }
         }
     } else {
         guard let p = pt else {
@@ -264,7 +267,8 @@ func cmdClick() -> Never {
             fail("bad_args", "event mode needs a point",
                  "Pass --x and --y, or use the default ax mode with --query.", .input)
         }
-        synthClick(pid: pid, at: p, button: opt("button") ?? "left", count: intOpt("count", 1))
+        synthClick(pid: pid, at: p, button: opt("button") ?? "left",
+                   count: intOpt("count", 1), windowID: frontWindowID(for: pid))
     }
     afterAction(pid, before: before, [("mode", mode as Any)])
 }
@@ -280,7 +284,19 @@ func cmdSetValue() -> Never {
     let before = changeFingerprint(pid)
     flash(n.centre, "set value")
     guarded { try setValue(n, v) }
-    afterAction(pid, before: before, [("ref", n.ref as Any)])
+    hideAgentCursor()
+    let st = settle(pid)
+    // A field can be read back directly, so verify exactly rather than inferring from a
+    // tree fingerprint: some controls accept AXSetValue and then reformat or reject it.
+    let readback = axStr(n.el, kAXValueAttribute as String)
+    let verified: Any = readback.map { $0 == v ? "true" : "false" } ?? "unknown"
+    var out: [(String, Any)] = [("ok", true), ("settled", st.0), ("settledMs", st.1),
+                                ("changed", changeFingerprint(pid) != before),
+                                ("verified", verified), ("ref", n.ref)]
+    if verified as? String == "false", let r = readback {
+        out.append(("actualValue", String(r.prefix(200))))
+    }
+    emit(out)
 }
 
 func cmdSelectText() -> Never {

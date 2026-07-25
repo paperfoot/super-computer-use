@@ -26,7 +26,9 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 echo "== setup =="
-# A dedicated document keeps the suite from touching anything the user cares about.
+# A dedicated document keeps the suite from touching anything the user cares about, and
+# every query below is scoped with win=scu-test so an unrelated TextEdit window the user
+# happens to have open cannot make the queries ambiguous.
 echo "seed" > "$WORK/scu-test.txt"
 
 # Wait out a TextEdit left quitting by a previous run, otherwise `open` reattaches to a
@@ -95,10 +97,10 @@ print(next(l.split()[1] for l in lines if "TextArea" in l))' 2>/dev/null)
   check "value landed"               "$BIN axdump --pid $PID | grep -q written1"
   # The ref must not change when the element's value changes, or scripts break.
   check "ref stable after write"     "$BIN axdump --pid $PID | grep -q '$REF'"
-  check "setvalue by query"          "$BIN setvalue --pid $PID --query 'role=AXTextArea' --value written2 --no-cursor"
+  check "setvalue by query"          "$BIN setvalue --pid $PID --query 'role=AXTextArea;win=scu-test' --value written2 --no-cursor"
   check "second value landed"        "$BIN axdump --pid $PID | grep -q written2"
   check "key chord accepted"         "$BIN key --pid $PID --key cmd+a"
-  check "selecttext"                 "$BIN selecttext --pid $PID --query 'role=AXTextArea' --text written2 --no-cursor"
+  check "selecttext"                 "$BIN selecttext --pid $PID --query 'role=AXTextArea;win=scu-test' --text written2 --no-cursor"
   check "settle reports ms"          "$BIN settle --pid $PID | grep -q settledMs"
   check "waitfor finds present text" "$BIN waitfor --pid $PID --text written2 --timeout 3"
   check "waitfor times out (exit 1)" "$BIN waitfor --pid $PID --text ZZQQXX --timeout 1; [ \$? -eq 1 ]"
@@ -110,7 +112,7 @@ echo "== honesty (silent-failure regressions) =="
 if [ -n "$PID" ]; then
   # A responder-level chord posts fine and does nothing in a background app. The tool
   # must say so via "changed" rather than reporting a bare success.
-  "$BIN" setvalue --pid "$PID" --query 'role=AXTextArea;nth=0' --value "HONESTY" --no-cursor >/dev/null 2>&1
+  "$BIN" setvalue --pid "$PID" --query 'role=AXTextArea;win=scu-test' --value "HONESTY" --no-cursor >/dev/null 2>&1
   CH=$("$BIN" key --pid "$PID" --key cmd+a 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["changed"])' 2>/dev/null)
   [ "$CH" = "False" ] && pass "responder chord reports changed=false" \
                       || fail "responder chord reported changed=$CH (expected False)"
@@ -118,7 +120,7 @@ if [ -n "$PID" ]; then
   check "responder chord explains why" \
     "$BIN key --pid $PID --key cmd+a | grep -q 'first responder'"
   # A real mutation must still report changed=true, or the signal is worthless.
-  CH2=$("$BIN" setvalue --pid "$PID" --query 'role=AXTextArea;nth=0' --value "CHANGED-NOW" --no-cursor 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["changed"])' 2>/dev/null)
+  CH2=$("$BIN" setvalue --pid "$PID" --query 'role=AXTextArea;win=scu-test' --value "CHANGED-NOW" --no-cursor 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["changed"])' 2>/dev/null)
   [ "$CH2" = "True" ] && pass "real mutation reports changed=true" \
                       || fail "real mutation reported changed=$CH2 (expected True)"
   # Zero-size elements are a classic silent no-op; refuse rather than pretend.
@@ -128,14 +130,38 @@ if [ -n "$PID" ]; then
     "$BIN click --pid $PID --menus --query 'role=AXMenuItem;nth=0' --no-cursor --no-check"
 fi
 
+echo "== multi-window addressing =="
+if [ -n "$PID" ]; then
+  # Two documents in one app expose identically-shaped elements. Before refs were scoped
+  # to their window, both produced the same ref and every lookup became ambiguous.
+  echo "second doc" > "$WORK/scu-second.txt"
+  open -g -a TextEdit "$WORK/scu-second.txt" 2>/dev/null
+  sleep 2
+  REFS=$("$BIN" axdump --pid "$PID" 2>/dev/null | python3 -c 'import json,sys
+lines=json.load(sys.stdin)["data"]["text"].split("\n")
+refs=[l.split()[1] for l in lines if "TextArea" in l]
+print(len(refs), len(set(refs)))' 2>/dev/null)
+  set -- $REFS
+  if [ "${1:-0}" -ge 2 ]; then
+    [ "$1" = "$2" ] && pass "refs are unique across windows ($1 text areas, $2 distinct)" \
+                    || fail "ref collision: $1 text areas but only $2 distinct refs"
+  else
+    pass "only one window present; collision check skipped"
+  fi
+  check "win= scopes to one document" \
+    "$BIN setvalue --pid $PID --query 'role=AXTextArea;win=scu-second' --value scoped --no-cursor"
+  check "win= wrote the right document" \
+    "$BIN axdump --pid $PID --grep scoped | grep -q scoped"
+fi
+
 echo "== flow =="
 if [ -n "$PID" ]; then
   check "batch runs a script" \
-    "echo '[{\"do\":\"setvalue\",\"query\":\"role=AXTextArea\",\"value\":\"batched\"},{\"do\":\"waitfor\",\"text\":\"batched\"}]' | $BIN batch --pid $PID --no-cursor | grep -q '\"completed\":2'"
+    "echo '[{\"do\":\"setvalue\",\"query\":\"role=AXTextArea;win=scu-test\",\"value\":\"batched\"},{\"do\":\"waitfor\",\"text\":\"batched\"}]' | $BIN batch --pid $PID --no-cursor | grep -q '\"completed\":2'"
   check "batch value landed"         "$BIN axdump --pid $PID | grep -q batched"
   # A failing step must report the steps that already succeeded.
   check "batch reports partial progress" \
-    "echo '[{\"do\":\"setvalue\",\"query\":\"role=AXTextArea\",\"value\":\"first\"},{\"do\":\"click\",\"ref\":\"Bogus#000\"}]' | $BIN batch --pid $PID --no-cursor 2>&1 | grep -q completedSteps"
+    "echo '[{\"do\":\"setvalue\",\"query\":\"role=AXTextArea;win=scu-test\",\"value\":\"first\"},{\"do\":\"click\",\"ref\":\"Bogus#000\"}]' | $BIN batch --pid $PID --no-cursor 2>&1 | grep -q completedSteps"
 fi
 
 echo "== capture =="

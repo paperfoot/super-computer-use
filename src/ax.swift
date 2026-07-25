@@ -43,6 +43,7 @@ struct Node {
     let size: CGSize?
     let path: String        // child-index path from the app root, e.g. "0.3.2.7"
     let actionable: Bool
+    let window: String      // owning window's title, or its index when untitled
 
     var text: String { [title, value, desc].filter { !$0.isEmpty }.joined(separator: " | ") }
 
@@ -54,7 +55,10 @@ struct Node {
     /// title, description) which persist across edits. Only when an element exposes none
     /// of those do we fall back to its tree path.
     var ref: String {
-        var key = "\(role)|\(ident)|\(title)|\(desc)"
+        // The owning window is part of the identity. Without it, two documents in the same
+        // app produce identical refs — both TextEdit windows expose an AXTextArea with the
+        // same role, identifier and (empty) title — and every ref lookup becomes ambiguous.
+        var key = "\(window)|\(role)|\(ident)|\(title)|\(desc)"
         if ident.isEmpty && title.isEmpty && desc.isEmpty {
             // Value-only elements (static text) are identified by their content;
             // structural ones by position in the tree.
@@ -114,12 +118,18 @@ private func bulkRead(_ e: AXUIElement) -> (role: String, title: String, value: 
 func collectNodes(pid: pid_t, maxDepth: Int = 18, maxNodes: Int = 4000,
                   includeMenus: Bool = false, windowFilter: CGWindowID? = nil) -> [Node] {
     var out: [Node] = []
+    // Tracks which window the walk is currently inside, so refs can be scoped to it.
+    var currentWindow = ""
     func walk(_ e: AXUIElement, _ depth: Int, _ path: String) {
         if depth > maxDepth || out.count >= maxNodes { return }
         let a = bulkRead(e)
         let role = a.role
         if !includeMenus, role == "AXMenuBar" || role == "AXMenuBarItem" { return }
         let title = a.title, value = a.value, desc = a.desc
+        // Entering a window scopes every descendant's ref to it.
+        if role == "AXWindow" || role == "AXSheet" || role == "AXDrawer" {
+            currentWindow = title.isEmpty ? "win:\(path)" : title
+        }
         let acts = axActions(e)
         // Index anything with text OR anything interactive: an empty text field carries
         // no text but must still be targetable.
@@ -127,7 +137,7 @@ func collectNodes(pid: pid_t, maxDepth: Int = 18, maxNodes: Int = 4000,
             out.append(Node(el: e, index: out.count, role: role, ident: a.ident,
                             title: title, value: value, desc: desc,
                             pos: a.pos, size: a.size, path: path,
-                            actionable: !acts.isEmpty))
+                            actionable: !acts.isEmpty, window: currentWindow))
         }
         if let kids = axAttr(e, kAXChildrenAttribute as String) as? [AXUIElement] {
             for (i, k) in kids.enumerated() { walk(k, depth + 1, path.isEmpty ? "\(i)" : "\(path).\(i)") }
@@ -270,6 +280,9 @@ func resolveSuggestion(_ code: String) -> String {
 struct Query {
     var role: String?, ident: String?, contains: String?, exact: String?
     var title: String?, nth: Int?, actionableOnly = false
+    /// Restrict matches to one window, by title substring. Essential for multi-window
+    /// apps where every document exposes an identically-shaped element.
+    var window: String?
 
     init(_ s: String) {
         for clause in s.split(separator: ";") {
@@ -283,6 +296,7 @@ struct Query {
             else if c.hasPrefix("text~=") { contains = rhs("~=")?.lowercased() }
             else if c.hasPrefix("text==") { exact = rhs("==") }
             else if c.hasPrefix("title=") { title = rhs("=") }
+            else if c.hasPrefix("win=") { window = rhs("=")?.lowercased() }
             else if c.hasPrefix("nth=") { nth = Int(rhs("=") ?? "") }
             else if c == "actionable" { actionableOnly = true }
         }
@@ -292,6 +306,7 @@ struct Query {
         if let r = role, n.role != r, n.role != "AX" + r { return false }
         if let i = ident, n.ident != i { return false }
         if let t = title, n.title != t { return false }
+        if let w = window, !n.window.lowercased().contains(w) { return false }
         if let c = contains, !n.text.lowercased().contains(c) { return false }
         if let e = exact, n.text != e { return false }
         if actionableOnly && !n.actionable { return false }

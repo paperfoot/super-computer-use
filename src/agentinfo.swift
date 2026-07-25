@@ -47,7 +47,7 @@ let commandSpecs: [CmdSpec] = [
     ]),
     CmdSpec(name: "actions", desc: "List the AX actions an element supports", opts: [
         ("--ref", "string", false, "", "Element fingerprint from find/axdump"),
-        ("--query", "string", false, "", "Selector, e.g. role=AXButton;text~=send;nth=0"),
+        ("--query", "string", false, "", "Selector, e.g. role=AXButton;text~=send;win=Inbox;nth=0"),
         ("--index", "integer", false, "", "Positional index (fragile; prefer ref/query)"),
     ]),
     CmdSpec(name: "click", desc: "Press an element or a point", opts: [
@@ -205,7 +205,8 @@ TARGETING — prefer query over ref over index
   --query 'role=AXButton;text~=send;nth=0'   readable, portable
   --ref 'Button#3f2a1b'                      exact fingerprint from find
   --index 42                                 positional; breaks on reflow
-  Query keys: role= id= text~= text== title= nth= actionable
+  Query keys: role= id= text~= text== title= win= nth= actionable
+  win= scopes to one window by title — needed when an app has several documents open
 
 Tips:
   Run `scu doctor` first — permissions are the number one failure mode, and they are
