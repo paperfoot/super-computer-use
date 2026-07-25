@@ -28,11 +28,31 @@ trap 'rm -rf "$WORK"' EXIT
 echo "== setup =="
 # A dedicated document keeps the suite from touching anything the user cares about.
 echo "seed" > "$WORK/bgcu-test.txt"
+
+# Wait out a TextEdit left quitting by a previous run, otherwise `open` reattaches to a
+# dying process and every app-driven assertion fails for the wrong reason.
+for _ in $(seq 1 20); do
+  pgrep -x TextEdit >/dev/null || break
+  sleep 0.5
+done
+
 open -g -a TextEdit "$WORK/bgcu-test.txt" 2>/dev/null
-sleep 3
-PID=$(pgrep -x TextEdit | head -1)
-if [ -z "$PID" ]; then echo "  could not launch TextEdit; skipping app-driven tests"; PID=""; fi
-[ -n "$PID" ] && pass "TextEdit running (pid $PID)" || fail "TextEdit did not start"
+
+# Poll until the document window is actually readable rather than sleeping a guess.
+PID=""
+for _ in $(seq 1 30); do
+  CAND=$(pgrep -x TextEdit | head -1)
+  if [ -n "$CAND" ] && "$BIN" axdump --pid "$CAND" 2>/dev/null | grep -q TextArea; then
+    PID="$CAND"; break
+  fi
+  sleep 0.5
+done
+if [ -n "$PID" ]; then
+  pass "TextEdit ready (pid $PID)"
+else
+  fail "TextEdit did not become ready within 15s"
+  echo "  (app-driven tests will be skipped)"
+fi
 
 echo "== contract =="
 check "help exits 0"                 "$BIN --help"
