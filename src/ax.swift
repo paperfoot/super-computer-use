@@ -134,14 +134,91 @@ func collectNodes(pid: pid_t, maxDepth: Int = 18, maxNodes: Int = 4000,
         }
     }
     let app = AXUIElementCreateApplication(pid)
-    // Some Catalyst and wrapped-iOS apps only publish a full tree once this is set.
-    // Opt-in: it can change how a few apps render, so we don't force it by default.
-    if flag("enhanced") {
-        _ = AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
-        usleep(150_000)
-    }
+    unlockAccessibility(app, force: flag("enhanced"))
     walk(app, 0, "")
     return out
+}
+
+/// Processes we've already tried to unlock this run.
+private var unlockedPids = Set<pid_t>()
+
+/// Ask an app to publish a full accessibility tree.
+///
+/// Chromium and Electron apps (Slack, VS Code, Discord) ship a title-bar-only tree until
+/// `AXManualAccessibility` is set; some Catalyst and iWork apps want
+/// `AXEnhancedUserInterface` instead. Both are no-ops returning
+/// kAXErrorAttributeUnsupported (-25205) on apps that don't recognise them, so setting
+/// them costs one call and can be the difference between 50 nodes and a full tree.
+func unlockAccessibility(_ app: AXUIElement, force: Bool = false) {
+    var appPid: pid_t = 0
+    AXUIElementGetPid(app, &appPid)
+    if !force && unlockedPids.contains(appPid) { return }
+    unlockedPids.insert(appPid)
+
+    let manual = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+    var enhanced: AXError = .attributeUnsupported
+    if manual != .success || force {
+        enhanced = AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+    }
+    // Only pay the settle cost when something actually changed.
+    if manual == .success || enhanced == .success { usleep(250_000) }
+}
+
+// MARK: - actionability
+//
+// Playwright refuses to click until an element is visible, stable, enabled and able to
+// receive the event. AX will happily "succeed" on a disabled or zero-size element and
+// change nothing, which reads to an agent as a working click. These checks turn that
+// silent no-op into an error with a fix.
+
+struct Actionability {
+    let ok: Bool
+    let code: String
+    let reason: String
+    let fix: String
+}
+
+func checkActionable(_ n: Node, pid: pid_t, forTyping: Bool = false) -> Actionability {
+    if axBool(n.el, "AXEnabled") == false {
+        return Actionability(ok: false, code: "element_disabled",
+            reason: "\(n.role) '\(n.label)' is disabled",
+            fix: "Whatever enables it has not happened yet. Use `scu waitfor` on the precondition, then retry.")
+    }
+    if axBool(n.el, kAXHiddenAttribute as String) == true {
+        return Actionability(ok: false, code: "element_hidden",
+            reason: "\(n.role) '\(n.label)' is marked hidden",
+            fix: "Reveal it first — expand its container or scroll it into view — then re-run `scu find`.")
+    }
+    // Zero-size elements are usually collapsed rows or off-screen virtual cells; AXPress
+    // on them reports success and does nothing.
+    if let s = n.size, s.width <= 1 || s.height <= 1 {
+        // A closed menu reports all its items at 0x0; scrolling would not help there,
+        // so give the fix that matches the element rather than a generic one.
+        let isMenu = n.role.hasPrefix("AXMenu")
+        return Actionability(ok: false, code: "element_not_visible",
+            reason: "\(n.role) '\(n.label)' has no on-screen size (\(Int(s.width))x\(Int(s.height)))",
+            fix: isMenu
+                ? "Items in a closed menu report 0x0. Note that menu commands routed through the "
+                + "first responder do nothing in a background app — prefer a direct action such as "
+                + "`scu setvalue`, or pass --no-check to try anyway and read \"changed\"."
+                : "Scroll it into view with `scu scroll`, or target a visible ancestor from `scu axdump`.")
+    }
+    if forTyping {
+        // Refuse to push keystrokes at a password field. Secure input also blocks the
+        // events at the OS level, so this would fail anyway — but silently.
+        let sub = axStr(n.el, kAXSubroleAttribute as String) ?? ""
+        if n.role == "AXSecureTextField" || sub == "AXSecureTextField" {
+            return Actionability(ok: false, code: "secure_field",
+                reason: "\(n.label.isEmpty ? "This field" : n.label) is a secure text field",
+                fix: "Type the password yourself. Secure input deliberately blocks synthetic keystrokes.")
+        }
+    }
+    return Actionability(ok: true, code: "", reason: "", fix: "")
+}
+
+/// Cheap fingerprint of the visible tree, used to tell whether an action changed anything.
+func changeFingerprint(_ pid: pid_t) -> String {
+    treeSignature(pid)
 }
 
 func requirePid() -> pid_t {

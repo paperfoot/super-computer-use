@@ -165,3 +165,23 @@ func dragFromTo(pid: pid_t, from: CGPoint, to: CGPoint) {
     }
 }
 
+
+/// Warn about chords that cannot work on a background app.
+///
+/// A background process has no first responder, so key equivalents that the responder
+/// chain handles (Select All, Copy, Paste, editing commands) are swallowed — the event
+/// posts fine and nothing happens. Chords the application delegate handles (New, Open)
+/// do work. Verified on macOS 15: cmd+n opened a TextEdit window while cmd+a did not
+/// select anything.
+func chordNote(_ chord: String) -> String {
+    let lower = chord.lowercased()
+    guard lower.contains("+") else { return "" }
+    let responderLevel = ["a", "c", "v", "x", "z", "b", "i", "u", "f",
+                          "left", "right", "up", "down", "delete", "backspace"]
+    let key = lower.split(separator: "+").last.map(String.init) ?? ""
+    if responderLevel.contains(key) {
+        return "'\(chord)' is usually handled by the first responder, which a background app "
+             + "does not have — check \"changed\". For text, prefer `scu setvalue` or `scu selecttext`."
+    }
+    return ""
+}

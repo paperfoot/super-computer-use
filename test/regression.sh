@@ -106,6 +106,28 @@ print(next(l.split()[1] for l in lines if "TextArea" in l))' 2>/dev/null)
   check "ambiguous query names candidates" "$BIN click --pid $PID --query 'role=AXButton' --no-cursor 2>&1 | grep -q ambiguous_query"
 fi
 
+echo "== honesty (silent-failure regressions) =="
+if [ -n "$PID" ]; then
+  # A responder-level chord posts fine and does nothing in a background app. The tool
+  # must say so via "changed" rather than reporting a bare success.
+  "$BIN" setvalue --pid "$PID" --query 'role=AXTextArea;nth=0' --value "HONESTY" --no-cursor >/dev/null 2>&1
+  CH=$("$BIN" key --pid "$PID" --key cmd+a 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["changed"])' 2>/dev/null)
+  [ "$CH" = "False" ] && pass "responder chord reports changed=false" \
+                      || fail "responder chord reported changed=$CH (expected False)"
+  # And it should carry the explanation, not leave the caller guessing.
+  check "responder chord explains why" \
+    "$BIN key --pid $PID --key cmd+a | grep -q 'first responder'"
+  # A real mutation must still report changed=true, or the signal is worthless.
+  CH2=$("$BIN" setvalue --pid "$PID" --query 'role=AXTextArea;nth=0' --value "CHANGED-NOW" --no-cursor 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["changed"])' 2>/dev/null)
+  [ "$CH2" = "True" ] && pass "real mutation reports changed=true" \
+                      || fail "real mutation reported changed=$CH2 (expected True)"
+  # Zero-size elements are a classic silent no-op; refuse rather than pretend.
+  check "zero-size element is refused" \
+    "$BIN click --pid $PID --menus --query 'role=AXMenuItem;nth=0' --no-cursor 2>&1 | grep -q element_not_visible"
+  check "--no-check overrides the refusal" \
+    "$BIN click --pid $PID --menus --query 'role=AXMenuItem;nth=0' --no-cursor --no-check"
+fi
+
 echo "== flow =="
 if [ -n "$PID" ]; then
   check "batch runs a script" \
@@ -129,11 +151,18 @@ print(w[0]["id"] if w else "")' 2>/dev/null)
 fi
 
 echo "== non-interference =="
+# The promise is that scu never brings its target forward — not that focus is frozen.
+# Asserting "frontmost never changed" false-fails whenever the person running the suite
+# switches apps mid-run, which is exactly what they should be free to do.
 AFTER=$(frontmost)
-if [ "$BEFORE" = "$AFTER" ]; then
-  pass "frontmost app unchanged ($BEFORE)"
+if [ "$AFTER" = "TextEdit" ]; then
+  fail "target app was brought to the front (frontmost = TextEdit)"
 else
-  fail "frontmost app changed: $BEFORE -> $AFTER"
+  if [ "$BEFORE" = "$AFTER" ]; then
+    pass "target never came forward; focus stayed on $AFTER"
+  else
+    pass "target never came forward (you switched $BEFORE -> $AFTER during the run)"
+  fi
 fi
 
 echo "== teardown =="

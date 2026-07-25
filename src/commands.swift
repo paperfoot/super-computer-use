@@ -56,10 +56,29 @@ func guarded<T>(_ body: () throws -> T) -> T {
 }
 
 /// Every mutating command ends the same way: drop the cursor, settle, report.
-func afterAction(_ pid: pid_t, _ extra: [(String, Any)] = []) -> Never {
+///
+/// `changed` is the honest bit. An AX action can return success and do nothing at all —
+/// a disabled control, a responder-level menu shortcut sent to a background app, a click
+/// on a stale node. Comparing a tree fingerprint across the action tells the caller
+/// whether the app actually reacted, instead of leaving them to assume it did.
+func afterAction(_ pid: pid_t, before: String? = nil, _ extra: [(String, Any)] = []) -> Never {
     hideAgentCursor()
     let s = settle(pid)
-    emit([("ok", true as Any), ("settled", s.0 as Any), ("settledMs", s.1 as Any)] + extra)
+    var fields: [(String, Any)] = [("ok", true), ("settled", s.0), ("settledMs", s.1)]
+    if let b = before {
+        fields.append(("changed", changeFingerprint(pid) != b))
+    }
+    emit(fields + extra)
+}
+
+/// Refuse predictable no-ops before acting, with the fix in the error.
+func preflight(_ n: Node, _ pid: pid_t, typing: Bool = false) {
+    if flag("no-check") { return }
+    let a = checkActionable(n, pid: pid, forTyping: typing)
+    if !a.ok {
+        hideAgentCursor()
+        fail(a.code, a.reason, a.fix, .transient)
+    }
 }
 
 /// Work out *why* an app produced no usable tree, and fail with the matching fix.
@@ -218,6 +237,8 @@ func cmdClick() -> Never {
         fail("bad_args", "No target given",
              "Pass --query 'role=AXButton;nth=0', or --ref from `scu find`, or --x/--y.", .input)
     }
+    if let n = node { preflight(n, pid) }
+    let before = changeFingerprint(pid)
     flash(pt, label)
 
     let mode = opt("mode") ?? "ax"
@@ -245,7 +266,7 @@ func cmdClick() -> Never {
         }
         synthClick(pid: pid, at: p, button: opt("button") ?? "left", count: intOpt("count", 1))
     }
-    afterAction(pid, [("mode", mode as Any)])
+    afterAction(pid, before: before, [("mode", mode as Any)])
 }
 
 func cmdSetValue() -> Never {
@@ -255,9 +276,11 @@ func cmdSetValue() -> Never {
              "Example: scu setvalue --query 'role=AXTextField;nth=0' --value hello", .input)
     }
     let n = resolveNode(pid)
+    preflight(n, pid, typing: true)
+    let before = changeFingerprint(pid)
     flash(n.centre, "set value")
     guarded { try setValue(n, v) }
-    afterAction(pid, [("ref", n.ref as Any)])
+    afterAction(pid, before: before, [("ref", n.ref as Any)])
 }
 
 func cmdSelectText() -> Never {
@@ -278,8 +301,9 @@ func cmdType() -> Never {
     guard let t = opt("text") else {
         fail("bad_args", "--text is required", "Example: scu type --app Notes --text \"hello\"", .input)
     }
+    let before = changeFingerprint(pid)
     typeText(pid: pid, text: t)
-    afterAction(pid)
+    afterAction(pid, before: before)
 }
 
 func cmdKey() -> Never {
@@ -288,8 +312,9 @@ func cmdKey() -> Never {
         fail("bad_args", "--key is required",
              "Example: scu key --key return, or --key cmd+shift+a", .input)
     }
+    let before = changeFingerprint(pid)
     guarded { try sendKey(pid: pid, chord: k) }
-    afterAction(pid)
+    afterAction(pid, before: before, [("note", chordNote(k) as Any)])
 }
 
 func cmdScroll() -> Never {
@@ -303,6 +328,7 @@ func cmdScroll() -> Never {
         fail("no_geometry", "Element \(n.ref) has no on-screen position",
              "Target a visible child instead — see `scu axdump`.", .input)
     }
+    let before = changeFingerprint(pid)
     flash(c, "scroll \(dir)")
     // An element's own AX scroll action is more reliable than wheel events in the background.
     let want = "AXScroll" + dir.prefix(1).uppercased() + dir.dropFirst()
@@ -311,7 +337,7 @@ func cmdScroll() -> Never {
     } else {
         scrollAt(pid: pid, p: c, dir: dir, pages: intOpt("pages", 1))
     }
-    afterAction(pid)
+    afterAction(pid, before: before)
 }
 
 func cmdDrag() -> Never {
@@ -329,9 +355,10 @@ func cmdDrag() -> Never {
         fail("bad_args", "drag needs a source and a destination",
              "Pass --from-ref A --to-ref B, or --from-x/--from-y with --to-x/--to-y.", .input)
     }
+    let before = changeFingerprint(pid)
     flash(f, "drag")
     dragFromTo(pid: pid, from: f, to: t)
-    afterAction(pid)
+    afterAction(pid, before: before)
 }
 
 func cmdPerform() -> Never {
@@ -341,6 +368,8 @@ func cmdPerform() -> Never {
              "Run `scu actions --query …` to list what the element supports.", .input)
     }
     let n = resolveNode(pid)
+    preflight(n, pid)
+    let before = changeFingerprint(pid)
     flash(n.centre, a.replacingOccurrences(of: "AX", with: ""))
     let e = AXUIElementPerformAction(n.el, a as CFString)
     if e != .success {
@@ -350,7 +379,7 @@ func cmdPerform() -> Never {
              avail.isEmpty ? "This element exposes no actions; target a different one via `scu axdump --actionable`."
                            : "Supported here: \(avail.joined(separator: ", ")). Pick one of those.", .transient)
     }
-    afterAction(pid)
+    afterAction(pid, before: before)
 }
 
 // MARK: - flow
