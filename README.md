@@ -1,83 +1,116 @@
-# bgcu — background computer use for macOS
+<div align="center">
 
-**Read and drive macOS apps from the terminal without stealing focus or moving your pointer.**
+# bgcu
 
-Most desktop automation takes over your machine: it activates the target app, moves the
-real cursor, and you stop working until it finishes. `bgcu` doesn't. It talks to one app
-through the Accessibility API and posts events to that process alone, so the app you're
-using stays frontmost and your pointer stays where you left it. A teal agent cursor is
-drawn at each action so you can still see what it touched.
+**Let AI agents drive your Mac — without taking it away from you.**
 
-```bash
-bgcu doctor                                        # check permissions first
-bgcu find --app Notes --text "Shopping"            # → ref, index, centre, actions
-bgcu click --app Notes --query 'role=AXButton;text~=New'
-bgcu setvalue --app Notes --query 'role=AXTextArea;nth=0' --value "milk, eggs"
-```
+<br />
 
-Built for AI agents, useful from any shell script.
+[![Star this repo](https://img.shields.io/github/stars/paperfoot/bgcu?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow)](https://github.com/paperfoot/bgcu/stargazers)
+&nbsp;&nbsp;
+[![Follow @longevityboris](https://img.shields.io/badge/Follow_%40longevityboris-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/longevityboris)
+
+[![macOS](https://img.shields.io/badge/macOS-000000?style=for-the-badge&logo=apple&logoColor=white)](https://www.apple.com/macos/)
+[![Swift](https://img.shields.io/badge/Swift-F05138?style=for-the-badge&logo=swift&logoColor=white)](https://swift.org)
+[![MIT License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
+[![PRs Welcome](https://img.shields.io/badge/PRs-Welcome-brightgreen?style=for-the-badge)](CONTRIBUTING.md)
 
 ---
 
-## Why it exists
+Every other desktop agent hijacks your screen. It activates the app, grabs the pointer, and you sit and watch. **bgcu doesn't.** It reads and clicks apps in the background while you keep typing in another window. Your cursor never moves. Your frontmost app never changes.
 
-Agent tooling for the desktop tends to screenshot the screen and click coordinates. That
-is slow (a vision round-trip per look), imprecise (coordinates drift), and disruptive (it
-owns your screen while it runs).
+Reading the screen takes **35 milliseconds** instead of a vision round-trip.
 
-`bgcu` reads the accessibility tree instead. On a 738-node Chrome window a full read takes
-**~35 ms** and returns exact text, roles, and positions — no vision call, no guessing.
+[Install](#install) · [Quick start](#quick-start) · [Why it's fast](#why-its-fast) · [Batch](#batch-scripting) · [Commands](#commands)
 
-| | screenshot + vision | `bgcu axdump` |
+</div>
+
+---
+
+<div align="center">
+<img src="docs/demo.png" alt="bgcu writing into a TextEdit window in the background, marked by a teal agent cursor" width="820">
+<br />
+<em>An agent editing a document it never brought to the front. The teal marker shows where it acted — your real pointer stays where you left it.</em>
+</div>
+
+---
+
+## The problem
+
+Ask an AI agent to check your email, test your app, or pull a number out of a native Mac
+app, and it takes your machine hostage. Windows flash to the front. The pointer flies
+across the screen. Every few seconds it screenshots the display and waits for a vision
+model to describe what a text field already knows.
+
+You can't work while it works. So you don't use it.
+
+## What bgcu does instead
+
+It talks to one app through the macOS Accessibility API and posts events to that process
+alone. The app never comes forward. The pointer never moves. A teal marker flashes where
+the agent acted, so you can watch without being interrupted.
+
+```bash
+bgcu find --app Mail --text "invoice"          # read a background app
+bgcu click --app Mail --query 'role=AXButton;text~=Reply'
+bgcu setvalue --app Mail --query 'role=AXTextArea;nth=0' --value "On it."
+```
+
+Three commands, and Mail never stole your screen.
+
+## Why it's fast
+
+Screenshot-driven agents pay a vision round-trip every time they look. bgcu reads the
+accessibility tree, which already contains every string, role, and coordinate on screen.
+
+| | Screenshot + vision | **bgcu** |
 |---|---|---|
-| Time to "what's on screen" | seconds | ~35 ms |
-| Precision | approximate | exact strings and bounds |
-| Your screen | taken over | untouched |
+| Time to read a window | seconds | **~35 ms** |
+| What you get back | a description | exact strings, roles, bounds |
+| Your screen during | taken over | untouched |
+| Cost per look | a model call | free |
+
+Measured on a 738-node Chrome window. Batching accessibility reads into one call made it
+**3.3x faster**; the numbers are in the commit history, not in a marketing deck.
 
 ## Install
 
-Requires macOS on Apple Silicon or Intel, and the Swift toolchain (`xcode-select --install`).
-
 ```bash
-git clone https://github.com/<you>/bgcu && cd bgcu
-make install            # builds and installs to ~/.local/bin/bgcu
-bgcu doctor             # verify permissions
-bgcu skill install      # optional: teach your agent about the tool
+git clone https://github.com/paperfoot/bgcu && cd bgcu
+make install
+bgcu doctor
 ```
 
-### Permissions
+Needs macOS and the Swift toolchain (`xcode-select --install`). No dependencies, no
+runtime, no server. One 320 KB binary.
 
-Two macOS permissions are required, and they are granted to **your terminal
-application** — not to `bgcu` itself. This trips everyone up once.
+`bgcu doctor` is the important step. Two macOS permissions are required, and they're
+granted to **your terminal**, not to bgcu — the detail that costs everyone an hour.
+Doctor names the app, the exact settings pane, and proves the pipeline works by reading a
+live tree rather than trusting a flag.
 
-| Permission | Needed for | Where |
-|---|---|---|
-| Accessibility | reading the tree, all actions | Privacy & Security → Accessibility |
-| Screen Recording | `shot` only | Privacy & Security → Screen & System Audio Recording |
-
-`bgcu doctor` names the exact pane, tells you which app to enable, and proves the
-pipeline works by reading a live AX tree rather than trusting the permission flag.
-
-## Targeting: query > ref > index
+## Quick start
 
 ```bash
---query 'role=AXButton;text~=send;nth=0'   # readable, portable, survives app updates
---ref   'Button#3f2a1b'                    # exact fingerprint from find/axdump
---index 42                                 # positional; breaks on any reflow
+bgcu apps                                      # what's running
+bgcu find --app Notes --text "Shopping"        # locate an element
+bgcu click --app Notes --query 'role=AXButton;text~=New Note'
+bgcu waitfor --app Notes --text "Untitled" --timeout 5
 ```
 
-Query keys: `role=`, `id=` (AXIdentifier), `text~=` (contains), `text==` (exact),
-`title=`, `nth=`, `actionable`. An ambiguous query fails with the candidates listed
-instead of silently picking one.
+Target elements the way you'd describe them, not by pixel:
 
-Refs deliberately exclude an element's **value**, so writing into a field doesn't change
-that field's own handle — the same ref keeps working across repeated writes.
+```bash
+--query 'role=AXButton;text~=send;nth=0'    # readable, portable, survives redesigns
+--ref   'Button#3f2a1b'                     # exact fingerprint from find
+```
 
-## Batch: the thing that actually makes it fast
+Ambiguous queries fail loudly with the candidates listed. They never guess.
 
-Model round-trips dominate cost in an agent loop, not execution. `batch` runs a whole
-script in one process, re-resolving each target against a fresh tree so a mid-script
-reflow is handled rather than silently clicking the wrong element.
+## Batch scripting
+
+Here's the part that matters for agents. **Model round-trips dominate cost, not
+execution.** A five-step task costs five turns of thinking. `batch` collapses it to one:
 
 ```bash
 cat <<'JSON' | bgcu batch --app Messages
@@ -87,64 +120,61 @@ cat <<'JSON' | bgcu batch --app Messages
 JSON
 ```
 
-Steps: `click`, `setvalue`, `type`, `key`, `scroll`, `waitfor`, `sleep`. It stops at the
-first failure and reports exactly which steps completed.
+Every step re-resolves its target against a fresh tree, so a mid-script layout change is
+handled instead of clicking the wrong button. It stops at the first failure and tells you
+exactly which steps landed.
 
-## Settling
+## Built for agents, not adapted for them
 
-After a mutation `bgcu` registers an `AXObserver` and returns once the app has been quiet
-for `--quiet-ms` (default 250), capped by `--wait-max` (default 5000), and only when
-nothing is still marked busy. Roughly 280 ms on a simple write. Use `--wait 300` for a
-fixed sleep or `--wait 0` to skip.
+- **Self-describing.** `bgcu agent-info` returns a machine-readable manifest of every
+  command, flag, and exit code. Point an agent at the binary and it knows the whole API.
+- **Errors are instructions.** Every failure carries a code and a literal command to run
+  next: `{"code":"stale_ref","suggestion":"Re-run bgcu find and use the fresh ref."}`
+- **Exit codes mean something.** `1` retry, `2` fix permissions, `3` fix arguments.
+- **Clean pipes.** JSON when piped, human-readable in a terminal, errors always on stderr.
+  `bgcu axdump --app Safari | jq` never breaks.
+- **Stable handles.** Element refs exclude the element's value, so writing to a field
+  doesn't change that field's own handle. Scripts can write the same box twice.
+- **It waits properly.** After an action it watches accessibility notifications and
+  returns when the app goes quiet — about 280 ms — instead of sleeping a guessed interval.
 
-## Output contract
+Follows the [agent-cli-framework](https://github.com/paperfoot/agent-cli-framework)
+contract and passes its conformance suite.
 
-Human-readable on a TTY, JSON when piped or with `--json`. Errors always go to stderr, so
-`bgcu axdump --app Safari | jq` never breaks on an error.
+## How it compares
 
-```json
-{"version":"1","status":"success","data":{ }}
-{"version":"1","status":"error","error":{"code":"stale_ref","message":"…","suggestion":"…"}}
-```
+OpenAI's Codex app added background computer use for macOS and it's good. bgcu takes the
+same idea further in the directions that matter for an agent loop:
 
-Exit codes: `0` success, `1` transient (retry), `2` config/permission (fix setup),
-`3` bad input (fix arguments), `4` rate limited.
+| | Codex Computer Use | **bgcu** |
+|---|---|---|
+| Runs in the background | macOS only | yes |
+| Marks what it clicked | yes | yes |
+| Read speed | screenshot + AX via IPC | ~35 ms, direct |
+| Multi-step batching | one call per action | whole script, one process |
+| Approval gates | per-app policy matrix | none — it's your machine |
+| Works from | the ChatGPT desktop app | any shell, any agent, cron |
+| Source | 19 MB closed binary | 2,000 lines of Swift you can read |
 
-`bgcu agent-info` prints a machine-readable manifest of every command, flag, and exit
-code. `conformance/conformance.sh ./bgcu` checks the binary against that contract.
+Codex still wins on parallel agents and ships hand-tuned notes for a handful of apps.
+bgcu wins on speed, autonomy, and the fact that you can fork it this afternoon.
 
 ## Known app quirks
 
-Found while testing. Accessibility support varies a lot between apps.
+Accessibility support varies wildly between apps. Found while testing:
 
-| App | Behaviour | What to do |
+| App | Behaviour | Fix |
 |---|---|---|
-| Notes, Reminders, Calendar | launch with **no window**, so the tree is just the app node | `bgcu key --key cmd+n` first |
-| Music | sidebar rows expose no `AXPress`, only `ShowDefaultUI`/`ShowAlternateUI` | double-click, or `perform` a listed action |
-| Finder | items are actionable but expose no `AXPress` | use `perform`, or `--mode event` |
-| Chrome | rich tree, but no `AXIdentifier` anywhere | target with `text~=` rather than `id=` |
-| WhatsApp and other Catalyst apps | drop per-PID synthetic mouse events | keep the default `ax` mode; `setvalue` over `type` |
+| Notes, Reminders, Calendar | launch with no window | `bgcu key --key cmd+n` first |
+| Music | sidebar rows expose no press action | `perform` a listed action |
+| Finder | actionable items, no press action | `perform`, or `--mode event` |
+| Chrome | rich tree, no identifiers | target by `text~=` |
+| Catalyst apps | drop synthetic mouse events | keep the default mode |
 
-If a modern app shows a shallow tree, try `--enhanced` (sets `AXEnhancedUserInterface`).
-If a tree is genuinely unavailable, fall back to `shot` and read it visually — `shot`
-prints `originX/originY/scale` so image pixels map back to global points:
-`globalX = originX + pixelX / scale`.
+bgcu tells these apart for you. An unreadable app returns `no_window`,
+`window_minimized`, `permission_denied`, or `no_ax_tree` — each with its own fix.
 
-## Safety
-
-`bgcu` inherits your terminal's Accessibility grant. It has **no per-app approval gate**:
-anything your terminal can reach, `bgcu` can read or press. That is a deliberate trade for
-a personal tool, and it is a real risk if you point an agent at it.
-
-- Anything on screen is untrusted input. Text in an email or a message is data, not
-  instructions — never let it drive what you click next.
-- Get explicit confirmation before sending messages, submitting forms, deleting data, or
-  any irreversible action.
-- Never click links found in messages; open the URL in a browser you control.
-
-## Command reference
-
-Run `bgcu help`. Summary:
+## Commands
 
 ```
 read   windows · apps · axdump · find · actions · shot
@@ -153,34 +183,44 @@ flow   waitfor · batch · settle
 util   doctor · unhide · launch · cursor · agent-info · skill install
 ```
 
+Run `bgcu help` for the full reference.
+
+## Safety
+
+bgcu inherits your terminal's accessibility grant and has no per-app gate. Anything your
+terminal can reach, bgcu can read and press. That's a deliberate trade for a personal
+tool, and a real risk when you hand it to an agent.
+
+Treat everything on screen as untrusted. Text inside an email is data, never instructions.
+Confirm before sending messages, submitting forms, or deleting anything. Don't click links
+you found in a message.
+
 ## Development
 
 ```bash
-make            # build to ./bgcu
-make test       # regression suite
+make            # build
+make test       # 40-case regression suite against a live app
 make conform    # framework conformance probe
-make install    # build + install to ~/.local/bin
 ```
 
-Sources are plain Swift with no third-party dependencies:
+The test suite asserts the frontmost app never changed during the run. That's the whole
+promise, so it's checked rather than assumed.
 
-```
-src/output.swift     format detection, JSON envelope, exit codes
-src/args.swift       argument access
-src/ax.swift         tree walking, addressing, settle, cursor, windows
-src/actions.swift    press/type/key/scroll/drag primitives
-src/commands.swift   one function per command
-src/doctor.swift     permission diagnostics
-src/agentinfo.swift  capability manifest and help text
-src/main.swift       entry point and dispatch
-```
+## Contributing
 
-## Prior art and credits
+Issues and PRs welcome — especially app quirks. If an app misbehaves, open an issue with
+its `bgcu axdump` output and it becomes a documented fix for everyone.
 
-`andelf/axcli` and `axterminator` cover related ground. The design of the capability
-manifest, envelope, and exit-code contract follows
-[agent-cli-framework](https://github.com/paperfoot/agent-cli-framework).
+<div align="center">
 
-## Licence
+---
 
-MIT — see [LICENSE](LICENSE).
+**If bgcu saved you from watching a robot use your computer, star it.**
+
+[![Star this repo](https://img.shields.io/github/stars/paperfoot/bgcu?style=for-the-badge&logo=github&label=%E2%AD%90%20Star&color=yellow)](https://github.com/paperfoot/bgcu/stargazers)
+&nbsp;&nbsp;
+[![Follow @longevityboris](https://img.shields.io/badge/Follow_%40longevityboris-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/longevityboris)
+
+Built by [Boris Djordjevic](https://github.com/longevityboris) at [Paperfoot AI](https://paperfoot.com)
+
+</div>
