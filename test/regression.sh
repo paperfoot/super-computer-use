@@ -124,10 +124,12 @@ if [ -n "$PID" ]; then
   [ "$CH2" = "True" ] && pass "real mutation reports changed=true" \
                       || fail "real mutation reported changed=$CH2 (expected True)"
   # Zero-size elements are a classic silent no-op; refuse rather than pretend.
+  # Assert the refusal only. Never press a real menu item: nth=0 is "About This Mac",
+  # and pressing it opened a window on the user's screen on every run.
   check "zero-size element is refused" \
     "$BIN click --pid $PID --menus --query 'role=AXMenuItem;nth=0' --no-cursor 2>&1 | grep -q element_not_visible"
-  check "--no-check overrides the refusal" \
-    "$BIN click --pid $PID --menus --query 'role=AXMenuItem;nth=0' --no-cursor --no-check"
+  check "--no-check is accepted as a flag" \
+    "$BIN help | grep -q no-check"
 fi
 
 echo "== multi-window addressing =="
@@ -163,6 +165,16 @@ if [ -n "$PID" ]; then
   check "batch reports partial progress" \
     "echo '[{\"do\":\"setvalue\",\"query\":\"role=AXTextArea;win=scu-test\",\"value\":\"first\"},{\"do\":\"click\",\"ref\":\"Bogus#000\"}]' | $BIN batch --pid $PID --no-cursor 2>&1 | grep -q completedSteps"
 fi
+
+echo "== safety policy =="
+# Deliberately does NOT launch a credential manager. An earlier version opened Keychain
+# Access to exercise the gate, which put a password prompt on the user's screen every run.
+check "credential managers are gated"   "grep -q 'highRiskBundles' src/ax.swift"
+check "security surfaces are forbidden" "grep -q 'forbiddenBundles' src/ax.swift"
+check "policy runs on every pid"        "grep -q 'enforceTargetPolicy' src/ax.swift"
+# The raw input path must carry the same guards as the element path.
+check "type checks secure input"        "grep -q 'enforceSecureInput' src/commands.swift"
+check "batch type checks it too"        "[ \$(grep -c 'enforceSecureInput' src/commands.swift) -ge 4 ]"
 
 echo "== capture =="
 if [ -n "$PID" ]; then

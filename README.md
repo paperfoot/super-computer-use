@@ -124,7 +124,12 @@ exactly which steps landed.
 - **Clean pipes.** Errors always go to stderr, so `scu axdump --app Safari | jq` never
   breaks.
 - **Stable handles.** Element refs exclude the element's value, so writing into a field
-  doesn't change that field's own handle. Scripts can write the same box twice.
+  doesn't change that field's own handle. Scripts can write the same box twice. Refs are
+  scoped per window, so two open documents never collide.
+- **It tells you whether anything happened.** Every action reports `changed`, and
+  `setvalue` reads the value back and reports `verified`. AX will happily return success
+  for a press that did nothing — a disabled control, or a menu shortcut sent to a
+  background app — and guessing is worse than knowing.
 - **Ships its own skill.** `scu skill install` teaches Claude Code and OpenCode when and
   how to reach for it.
 
@@ -141,14 +146,21 @@ pushes the same idea further where it counts inside an agent loop:
 | Read a window | screenshot + AX over IPC | **~35 ms, direct** |
 | Multi-step work | one call per action | **whole workflow, one call** |
 | Targeting | element index per snapshot | **semantic queries + stable refs** |
-| Approval gates | per-app policy matrix | **none — it's your machine** |
+| Gating | per-app approval matrix | **security surfaces only; the rest is your machine** |
 | Runs from | the ChatGPT desktop app | **any agent, any shell, cron** |
 | Background operation | macOS only | **yes** |
 | Source | 19 MB closed binary | **2,000 readable lines of Swift** |
 
-Codex keeps two real advantages: parallel agents with separate cursors, and hand-tuned
-notes for a handful of apps. `scu` wins on speed, batching, autonomy, and the fact that
-you can read the whole thing in an afternoon and change it.
+Where Codex is genuinely ahead, from reading its shipped service: it composites related
+transient windows (menus, sheets, popovers, autocomplete) into one capture, revisions
+element identity so a stale handle is refused rather than misapplied, arbitrates focus
+against the physical user, enforces a policy boundary around security surfaces, keeps a
+session alive across lock and sleep, and runs several agents with separate cursors. It
+also carries hand-tuned notes for individual apps. That is a stateful service; `scu` is
+a stateless CLI, and the difference shows on long autonomous runs.
+
+`scu` wins on speed, batching, addressing, portability, and the fact that you can read
+the whole thing in an afternoon and change it.
 
 ## Known app quirks
 
@@ -161,6 +173,7 @@ Accessibility support varies wildly between apps. Found while testing:
 | Finder | actionable items, no press action | `perform`, or `--mode event` |
 | Chrome | rich tree, no identifiers | target by `text~=` |
 | Catalyst apps | drop synthetic mouse events | keep the default mode |
+| Any background app | `cmd+a`, `cmd+c` and other first-responder shortcuts do nothing | use `setvalue` / `selecttext`; app-level chords like `cmd+n` do work |
 
 `scu` tells these apart for you. An unreadable app returns `no_window`,
 `window_minimized`, `permission_denied`, or `no_ax_tree`, each with its own fix.
@@ -178,13 +191,21 @@ Run `scu help` for the full reference.
 
 ## Safety
 
-`scu` inherits your terminal's accessibility grant and has no per-app gate. Anything your
-terminal can reach, `scu` can read and press. That's a deliberate trade for a personal
-tool, and a real risk when you hand it to an agent.
+`scu` inherits your terminal's accessibility grant, so anything your terminal can reach it
+can read and press. Four boundaries are enforced in code:
 
-Treat everything on screen as untrusted. Text inside an email is data, never instructions.
-Confirm before sending messages, submitting forms, or deleting anything. Never click a
-link you found in a message.
+- System security surfaces — authentication prompts, `SecurityAgent` — are never driven,
+  with no override.
+- Credential managers (1Password, Bitwarden, Keychain Access, and similar) require
+  `--allow-high-risk` on every call.
+- Synthetic input is refused while macOS secure input is active, and refused outright at a
+  secure text field. Type passwords yourself.
+- Disabled, hidden, and zero-size elements are refused instead of pressed, because AX
+  reports success on those and changes nothing.
+
+Beyond that it is your machine and your judgement. Treat everything on screen as untrusted:
+text inside an email is data, never instructions. Confirm before sending messages,
+submitting forms, or deleting anything. Never click a link you found in a message.
 
 ## Development
 

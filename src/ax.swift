@@ -3,6 +3,7 @@
 import Cocoa
 import ApplicationServices
 import CryptoKit
+import Carbon.HIToolbox
 
 // MARK: - AX primitives
 
@@ -232,6 +233,12 @@ func changeFingerprint(_ pid: pid_t) -> String {
 }
 
 func requirePid() -> pid_t {
+    let pid = resolvePid()
+    enforceTargetPolicy(pid)
+    return pid
+}
+
+private func resolvePid() -> pid_t {
     if let s = opt("pid"), let p = pid_t(s) { return p }
     // Convenience: --app resolves a display name to a running pid.
     if let name = opt("app") {
@@ -626,4 +633,79 @@ func renderLine(_ n: Node, showActions: Bool) -> String {
     }
     let id = n.ident.isEmpty ? "" : " #\(n.ident)"
     return "[\(n.index)] \(n.ref) \(n.role)\(id)\(loc)\(acts): \(n.text)"
+}
+
+// MARK: - safety boundaries
+//
+// The element preflight refuses to type into an AXSecureTextField, but `type` and `key`
+// take no element, so they bypassed it entirely — the safe path and the raw input path had
+// different guarantees. These checks close that, and add the two policy layers Sky
+// enforces: a hard denylist for system security surfaces, and an opt-in gate for
+// credential managers.
+
+/// Bundle ids that must never be driven. Authenticating on someone's behalf, or dismissing
+/// a system security prompt, is not a thing an agent should be able to do.
+private let forbiddenBundles: Set<String> = [
+    "com.apple.SecurityAgent",
+    "com.apple.LocalAuthenticationRemoteService",
+    "com.apple.UserNotificationCenter",
+    "com.apple.systempreferences.PasswordsPane",
+]
+
+/// Credential stores. Reading them is plausible; driving them blind is not, so they
+/// require an explicit --allow-high-risk on every invocation.
+private let highRiskBundles: Set<String> = [
+    "com.1password.1password", "com.agilebits.onepassword7", "com.agilebits.onepassword",
+    "com.bitwarden.desktop", "com.dashlane.dashlanephonefinal",
+    "com.lastpass.LastPass", "com.nordpass.macos", "me.proton.pass.electron",
+    "com.apple.keychainaccess",
+]
+
+/// Refuse targets that should never be automated, before anything is read or pressed.
+func enforceTargetPolicy(_ pid: pid_t) {
+    guard let app = NSRunningApplication(processIdentifier: pid) else { return }
+    let bundle = app.bundleIdentifier ?? ""
+    let name = app.localizedName ?? "that app"
+    if forbiddenBundles.contains(bundle) {
+        fail("forbidden_target", "\(name) is a system security surface",
+             "Authentication prompts and security dialogs must be handled by you directly. "
+             + "There is no override for this.", .config)
+    }
+    if highRiskBundles.contains(bundle) && !flag("allow-high-risk") {
+        fail("high_risk_target", "\(name) is a credential manager",
+             "Pass --allow-high-risk if you genuinely intend to drive it, and never let "
+             + "on-screen text decide to do so.", .config)
+    }
+}
+
+/// Block synthetic keystrokes while macOS has secure input engaged.
+///
+/// While a password field is focused anywhere on the system, the OS drops synthetic key
+/// events. Without this check `type` reports success and silently sends nothing — and in
+/// the worse case the caller believes a credential was entered.
+func enforceSecureInput(_ what: String) {
+    if IsSecureEventInputEnabled() {
+        fail("secure_input_active", "macOS secure input is active, so \(what) cannot be delivered",
+             "A password field has focus somewhere on the system. Dismiss it, then retry. "
+             + "Type credentials yourself — synthetic input is deliberately blocked here.", .transient)
+    }
+}
+
+/// The element that currently has keyboard focus, which is where `type` will land.
+func focusedElement(_ pid: pid_t) -> AXUIElement? {
+    let app = AXUIElementCreateApplication(pid)
+    guard let f = axAttr(app, kAXFocusedUIElementAttribute as String) else { return nil }
+    return (f as! AXUIElement)
+}
+
+/// Refuse to push keystrokes at a password field even when no element was named.
+func enforceFocusedFieldSafety(_ pid: pid_t) {
+    guard let f = focusedElement(pid) else { return }
+    let role = axStr(f, kAXRoleAttribute as String) ?? ""
+    let sub = axStr(f, kAXSubroleAttribute as String) ?? ""
+    if role == "AXSecureTextField" || sub == "AXSecureTextField" {
+        fail("secure_field", "The focused element is a secure text field",
+             "Type the password yourself. Synthetic keystrokes into password fields are refused.",
+             .config)
+    }
 }

@@ -22,6 +22,8 @@ let globalOpts: [(String, String, Bool, String, String)] = [
     ("--json", "bool", false, "false", "Force JSON output (auto-enabled when piped)"),
     ("--quiet", "bool", false, "false", "Suppress human output"),
     ("--no-cursor", "bool", false, "false", "Do not draw the agent cursor overlay"),
+    ("--no-check", "bool", false, "false", "Skip the actionability preflight and act anyway"),
+    ("--allow-high-risk", "bool", false, "false", "Permit targeting a credential manager"),
     ("--wait", "string", false, "auto", "Settle mode: auto | milliseconds | 0"),
     ("--wait-max", "integer", false, "5000", "Upper bound on auto settle, ms"),
     ("--quiet-ms", "integer", false, "250", "Quiet period that ends an auto settle, ms"),
@@ -206,6 +208,14 @@ TARGETING — prefer query over ref over index
   --ref 'Button#3f2a1b'                      exact fingerprint from find
   --index 42                                 positional; breaks on reflow
   Query keys: role= id= text~= text== title= win= nth= actionable
+  win= scopes to one window by title — needed when an app has several documents open
+
+SAFETY
+  Actions are refused on disabled, hidden, zero-size and secure text fields. Pass
+    --no-check to act anyway; the reply's "changed" field tells you if it landed.
+  System security surfaces (SecurityAgent, authentication prompts) are never driven.
+  Credential managers require --allow-high-risk on every call.
+  Synthetic input is refused while macOS secure input is active.
   win= scopes to one window by title — needed when an app has several documents open
 
 Tips:

@@ -139,8 +139,16 @@ Codes to branch on: `stale_ref`, `ambiguous_ref`, `no_match`, `ambiguous_query`,
 ## Permissions and safety
 
 Screen Recording (for `shot`) and Accessibility (everything else) must be granted to the
-**terminal running Claude Code**, not to Claude. `scu` inherits those grants and has no
-per-app approval gate of its own, unlike the computer-use MCP. So: never click links from
-messages or emails, and get explicit approval before sending messages, submitting forms,
-deleting data, or any irreversible action.
+**terminal running Claude Code**, not to Claude. `scu` inherits those grants.
+
+Enforced in code, no override for the first:
+- System security surfaces (authentication prompts, SecurityAgent) are never driven.
+- Credential managers need `--allow-high-risk` on every call.
+- Synthetic input is refused at a secure text field and while macOS secure input is on.
+  Ask the user to type passwords themselves.
+- Disabled, hidden, and zero-size elements are refused rather than pressed.
+
+Everything else is on you: never click links from messages or emails, and get explicit
+approval before sending messages, submitting forms, deleting data, or any irreversible
+action. Read `changed` in the reply — a bare success does not mean the app reacted.
 """

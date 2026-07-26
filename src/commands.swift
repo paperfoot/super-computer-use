@@ -317,6 +317,10 @@ func cmdType() -> Never {
     guard let t = opt("text") else {
         fail("bad_args", "--text is required", "Example: scu type --app Notes --text \"hello\"", .input)
     }
+    // The raw input path takes no element, so it needs its own guards; without these it
+    // was the one way to push keystrokes at a password field.
+    enforceSecureInput("typing")
+    enforceFocusedFieldSafety(pid)
     let before = changeFingerprint(pid)
     typeText(pid: pid, text: t)
     afterAction(pid, before: before)
@@ -328,6 +332,7 @@ func cmdKey() -> Never {
         fail("bad_args", "--key is required",
              "Example: scu key --key return, or --key cmd+shift+a", .input)
     }
+    enforceSecureInput("key presses")
     let before = changeFingerprint(pid)
     guarded { try sendKey(pid: pid, chord: k) }
     afterAction(pid, before: before, [("note", chordNote(k) as Any)])
@@ -475,8 +480,11 @@ func cmdBatch() -> Never {
                 let n = try node(); flash(n.centre, "set value")
                 try setValue(n, (step["value"] as? String) ?? ""); hideAgentCursor()
             case "type":
+                enforceSecureInput("typing")
+                enforceFocusedFieldSafety(pid)
                 typeText(pid: pid, text: (step["text"] as? String) ?? "")
             case "key":
+                enforceSecureInput("key presses")
                 try sendKey(pid: pid, chord: (step["key"] as? String) ?? "")
             case "scroll":
                 let n = try node()
