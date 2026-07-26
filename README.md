@@ -80,9 +80,17 @@ macOS with the Swift toolchain (`xcode-select --install`). No dependencies, no r
 daemon. A 320 KB binary.
 
 Run `scu doctor` before anything else. Two macOS permissions are required, and they're
-granted to **your terminal**, not to `scu` — the detail that costs everyone an hour.
-Doctor names the app, the exact settings pane, and proves the pipeline works by reading a
-live tree rather than trusting a flag.
+granted to **the app running `scu`**, not to `scu` — the detail that costs everyone an
+hour. Doctor names that app, the exact settings pane, and proves the pipeline works by
+reading a live tree rather than trusting a flag.
+
+**Over SSH**, that app is `sshd`, not a terminal, so the grant has to go to
+`/usr/libexec/sshd-keygen-wrapper`. Weigh that first: it hands full UI control to anyone
+who can SSH in. And `scu` drives real on-screen UI, so it needs someone logged in at the
+console — a locked screen or a headless box has no window server and nothing works.
+`scu doctor` reports both conditions by name instead of leaving you to read it as a
+permissions bug. Window enumeration (`scu windows`) is the exception; it needs no
+Accessibility at all.
 
 ## Use it
 
