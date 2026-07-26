@@ -103,7 +103,9 @@ func diagnoseEmptyTree(_ pid: pid_t) -> Never {
         let minimized = listWindows(all: true).filter { $0.pid == pid }
         if !minimized.isEmpty {
             fail("window_minimized", "\(name) has no open window; \(minimized.count) minimized or off-screen",
-                 "Run `scu unhide --pid \(pid)` to restore it, then retry.", .transient)
+                 "Try `scu unhide --pid \(pid)`. If that reports cannot_restore, the app hides "
+                 + "minimized windows from accessibility and you must click its Dock icon — restoring "
+                 + "it any other way would steal focus.", .transient)
         }
         fail("no_window", "\(name) is running but has no open window",
              "Open a window first — e.g. `scu key --pid \(pid) --key cmd+n`, or click its Dock icon. "
@@ -591,15 +593,29 @@ func cmdUnhide() -> Never {
                                          kAXHiddenAttribute as CFString, kCFBooleanFalse)
     }
     var unminimized = 0
-    if let wins = axAttr(AXUIElementCreateApplication(pid), kAXWindowsAttribute as String) as? [AXUIElement] {
-        for w in wins where axBool(w, kAXMinimizedAttribute as String) == true {
-            _ = AXUIElementSetAttributeValue(w, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
-            unminimized += 1
-        }
+    let axWins = (axAttr(AXUIElementCreateApplication(pid), kAXWindowsAttribute as String) as? [AXUIElement]) ?? []
+    for w in axWins where axBool(w, kAXMinimizedAttribute as String) == true {
+        _ = AXUIElementSetAttributeValue(w, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+        unminimized += 1
     }
     usleep(400_000)
+
+    // Some apps — Electron ones especially — drop a minimized window out of AXWindows
+    // entirely. There is then no handle to clear AXMinimized on, and reporting success
+    // would send the caller back into the same failure. Restoring it needs the window
+    // server, which means activating the app, and activating is the one thing this tool
+    // exists not to do. Say so plainly instead.
+    let stillGone = axWins.isEmpty && !listWindows(all: true).filter { $0.pid == pid }.isEmpty
+    if stillGone {
+        let name = NSRunningApplication(processIdentifier: pid)?.localizedName ?? "the app"
+        fail("cannot_restore", "\(name) has a minimized window that it does not expose to accessibility",
+             "Nothing here can restore it without activating the app, which would steal focus. "
+             + "Click its Dock icon, or run: osascript -e 'tell application \"\(name)\" to activate'. "
+             + "Reading still works once a window is on screen.", .transient)
+    }
     emit([("ok", true as Any), ("wasHidden", wasHidden as Any),
-          ("unminimized", unminimized as Any)] as [(String, Any)])
+          ("unminimized", unminimized as Any),
+          ("axWindows", axWins.count as Any)] as [(String, Any)])
 }
 
 func cmdLaunch() -> Never {
