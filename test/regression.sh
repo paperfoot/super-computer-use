@@ -90,7 +90,8 @@ if [ -n "$PID" ]; then
   REF=$($BIN axdump --pid "$PID" 2>/dev/null \
         | python3 -c 'import json,sys
 lines=json.load(sys.stdin)["data"]["text"].split("\n")
-print(next(l.split()[1] for l in lines if "TextArea" in l))' 2>/dev/null)
+# Tree rows only: the dump now leads with url/focus context lines that also mention roles.
+print(next(l.split()[1] for l in lines if l.startswith("[") and "TextArea" in l))' 2>/dev/null)
   [ -n "$REF" ] && pass "resolved a stable ref ($REF)" || fail "could not resolve a ref"
 
   check "setvalue by ref"            "$BIN setvalue --pid $PID --ref '$REF' --value written1 --no-cursor"

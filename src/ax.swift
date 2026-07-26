@@ -709,3 +709,51 @@ func enforceFocusedFieldSafety(_ pid: pid_t) {
              .config)
     }
 }
+
+// MARK: - context beyond the tree
+//
+// A flat role/title dump answers "what controls exist" but not "what is the user looking
+// at". Sky returns focus, selection and document context as first-class fields; without
+// them an agent has to guess which control it is about to act on.
+
+/// Whatever currently holds keyboard focus, rendered for the dump header.
+func focusSummary(_ pid: pid_t) -> String? {
+    guard let f = focusedElement(pid) else { return nil }
+    let role = axStr(f, kAXRoleAttribute as String) ?? "?"
+    let label = [axStr(f, kAXTitleAttribute as String), axStr(f, kAXDescriptionAttribute as String)]
+        .compactMap { $0 }.first { !$0.isEmpty } ?? ""
+    let value = (axStr(f, kAXValueAttribute as String) ?? "").prefix(60)
+    var line = "focus: \(role)"
+    if !label.isEmpty { line += " '\(label)'" }
+    if !value.isEmpty { line += " = \(value)" }
+    if let sel = axStr(f, kAXSelectedTextAttribute as String), !sel.isEmpty {
+        line += "  selected: '\(sel.prefix(60))'"
+    }
+    return line
+}
+
+/// First URL found in a window subtree. Browser windows otherwise look like any other
+/// titled window, so an agent cannot tell which page it is operating on.
+func windowURL(_ e: AXUIElement, depth: Int = 0) -> String? {
+    if depth > 6 { return nil }
+    if let u = axAttr(e, "AXURL") {
+        if let url = u as? NSURL { return url.absoluteString }
+        if let s = u as? String { return s }
+    }
+    if let kids = axAttr(e, kAXChildrenAttribute as String) as? [AXUIElement] {
+        for k in kids { if let r = windowURL(k, depth: depth + 1) { return r } }
+    }
+    return nil
+}
+
+func urlSummary(_ pid: pid_t) -> String? {
+    let app = AXUIElementCreateApplication(pid)
+    guard let wins = axAttr(app, kAXWindowsAttribute as String) as? [AXUIElement] else { return nil }
+    for w in wins {
+        if let u = windowURL(w) {
+            let title = axStr(w, kAXTitleAttribute as String) ?? ""
+            return "url: \(u)\(title.isEmpty ? "" : "   (\(title.prefix(60)))")"
+        }
+    }
+    return nil
+}

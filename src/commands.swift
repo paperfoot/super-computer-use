@@ -68,7 +68,42 @@ func afterAction(_ pid: pid_t, before: String? = nil, _ extra: [(String, Any)] =
     if let b = before {
         fields.append(("changed", changeFingerprint(pid) != b))
     }
+    fields += thenFields(pid)
     emit(fields + extra)
+}
+
+/// --then folds the follow-up read into the acting response. An agent that acts and then
+/// immediately looks otherwise pays two process launches and two model round-trips for
+/// one logical step.
+func thenFields(_ pid: pid_t) -> [(String, Any)] {
+    var fields: [(String, Any)] = []
+    if let mode = opt("then") {
+        let nodes = collectNodes(pid: pid, maxDepth: intOpt("depth", 16),
+                                 maxNodes: intOpt("max", 4000), includeMenus: flag("menus"))
+        let rendered = nodes.map { renderLine($0, showActions: flag("actions")) }
+        switch mode {
+        case "dump":
+            fields.append(("tree", rendered.joined(separator: "\n")))
+        case "diff":
+            let url = cacheURL(pid)
+            let prev = (try? String(contentsOf: url, encoding: .utf8))?.components(separatedBy: "\n") ?? []
+            try? rendered.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+            func key(_ l: String) -> String {
+                guard let r = l.range(of: "] ") else { return l }
+                return String(l[r.upperBound...])
+            }
+            let prevKeys = Set(prev.map(key)), nowKeys = Set(rendered.map(key))
+            let added = rendered.filter { !prevKeys.contains(key($0)) }
+            let removed = prev.filter { !$0.isEmpty && !nowKeys.contains(key($0)) }
+            fields.append(("diff", (added.map { "+ \($0)" } + removed.map { "- \($0)" })
+                                    .joined(separator: "\n")))
+        case "focus":
+            fields.append(("focus", focusSummary(pid) ?? "none"))
+        default:
+            break
+        }
+    }
+    return fields
 }
 
 /// Refuse predictable no-ops before acting, with the fix in the error.
@@ -186,7 +221,15 @@ func cmdAxdump() -> Never {
     }
 
     try? lines.joined(separator: "\n").write(to: cacheURL(pid), atomically: true, encoding: .utf8)
-    emitText(lines.joined(separator: "\n"))
+    // Prepend what the tree alone cannot say: what has focus, what is selected, and which
+    // page a browser window is on. Suppress with --no-context for a bare tree.
+    var header: [String] = []
+    if !flag("no-context") {
+        if let u = urlSummary(pid) { header.append(u) }
+        if let f = focusSummary(pid) { header.append(f) }
+    }
+    let body = lines.joined(separator: "\n")
+    emitText(header.isEmpty ? body : header.joined(separator: "\n") + "\n" + body)
 }
 
 func cmdFind() -> Never {
@@ -298,7 +341,7 @@ func cmdSetValue() -> Never {
     if verified as? String == "false", let r = readback {
         out.append(("actualValue", String(r.prefix(200))))
     }
-    emit(out)
+    emit(out + thenFields(pid))
 }
 
 func cmdSelectText() -> Never {
