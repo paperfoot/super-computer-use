@@ -1,7 +1,9 @@
 # Handoff — super-computer-use (`scu`)
 
-Written 2026-07-27, at the end of a long session. Read this, then start with the
-**Next session** block at the bottom.
+Written 2026-07-27. Updated after a stopped workflow run.
+
+Read the **STOP** section first — it is the one thing that will make Boris angry if you
+get it wrong. Then the **Next session** block at the bottom.
 
 ---
 
@@ -118,6 +120,36 @@ stateless CLI, and the difference shows on long autonomous runs.
 
 ---
 
+## STOP — read this before running anything
+
+**Never test `scu` against apps on Boris's laptop. He works on it all day.**
+
+This rule was learned twice, the hard way, and the second time cost his patience:
+
+1. An early regression suite launched Keychain Access and pressed "About This Mac" on
+   every run, putting a real password prompt and a system window on his screen.
+2. A five-agent review workflow was told TextEdit was a "safe fixture". Each agent opened
+   scratch documents with `open -g` — which still puts a window on screen — and five
+   agents doing it in parallel buried him in windows while he was working. He asked twice,
+   the second time angrily, to stop using the machine.
+
+`open -g` is **not** discreet. It does not steal focus, but the window is visible.
+
+**Where to test instead, in order of preference:**
+
+1. **The Mac Studio** — `ssh studio`, already has `scu` installed and `doctor` healthy.
+   Nobody is looking at that screen. This is the default for anything that opens a window.
+2. **Read-only probes against already-running apps** on any machine. `axdump`, `find`,
+   `windows`, `apps`, `shot` change nothing and open nothing. Most review work needs only
+   these.
+3. **Source reading plus `scu --help` / `agent-info`** for contract questions.
+
+If a workflow spawns agents that touch apps, put this rule in **every agent's prompt**,
+not just the orchestrator's — the previous attempt had a safety block and the agents still
+opened windows, because "TextEdit is a safe fixture" contradicted it.
+
+---
+
 ## Next session — use UltraCode and Workflows
 
 The user has asked explicitly for **UltraCode and multi-agent Workflows** from here. This
@@ -141,20 +173,40 @@ then a synthesis pass that ranks by value/effort against the current source.
 **Workflow 3 — real-app conformance matrix.** One agent per app (Mail, Notes, Messages,
 Safari, Slack, Finder, Music, System Settings, a Catalyst app, an Electron app), each
 running the same scripted battery and recording which verbs actually work. This is where
-the real bugs are. The Mac Studio (`ssh studio`) is available as a second machine and has
-a different app mix — use it.
+the real bugs are. **Run this entirely on the Mac Studio over `ssh studio`** — it opens
+windows by definition, so it must not touch the laptop.
+
+### Attempt 1 of Workflow 1, and why it was killed
+
+Run `wf_0a5536c5-81f` launched five finders (silent-success, safety, suggestions,
+contract, test-honesty) with three refuting skeptics per finding. It was **stopped
+mid-flight** because the finders were opening TextEdit windows on the laptop.
+
+- Script is saved at
+  `~/.claude/projects/-Users-biobook-Code-claude-computer-use/d5fe9c9d-e986-43a9-9657-ced24064804e/workflows/scripts/scu-adversarial-review-wf_0a5536c5-81f.js`
+- Six agents had started, **zero completed**, so there is nothing cached worth resuming.
+  Do not bother with `resumeFromRunId`; start fresh.
+- The design was sound — reuse it, but change the testing rule in the shared CONTEXT
+  string: strike "TextEdit is a safe fixture", and replace it with "read-only probes only
+  on this machine; anything that opens a window runs over `ssh studio`".
+
+One useful signal before it died: the finders were reading source and probing for several
+minutes each without returning, which is normal for this workload. Long silence is not a
+stall. Check liveness with mtimes on the transcript dir — and note `find -newermt` is GNU
+syntax that silently fails on macOS and will lie to you.
 
 **Then implement** the ranked output, with each fix carrying a regression test that fails
 before and passes after.
 
 Guardrails for whoever picks this up:
 
-- Test against real apps, not TextEdit. TextEdit is too cooperative.
+- Test against real apps, not TextEdit — but do it on the **Studio**, never the laptop.
+  TextEdit is also too cooperative to surface the interesting failures.
 - Every action verb must report whether it worked.
 - Every error must carry a suggestion you have actually run.
 - Never leave the user's machine changed: close what you open, restore what you minimize.
-- The user is often working on the same Mac. Do not steal focus, do not open windows, do
-  not trigger auth prompts.
+- Boris is working on the laptop all day. Do not open windows there, full stop. `open -g`
+  is not discreet. When in doubt, run it on the Studio or not at all.
 
 ---
 
