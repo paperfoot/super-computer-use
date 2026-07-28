@@ -54,12 +54,12 @@ a minimized Cursor window on the Studio.
 
 ## Research assets — read these before doing anything
 
-Three external analyses, all evidence-cited. They are the highest-value context here
-and cost roughly two hours of wall-clock to produce.
+External analyses, all evidence-cited. They are the highest-value context here.
 
 | File | What it is |
 |---|---|
-| `~/.claude/subagent-results/scu-codex-sky-reverse-engineering.md` | 1,366 lines. Codex Sol at max reasoning, disassembling Sky's 19 MB service. Full 29-code error taxonomy, 26-type IPC registry, transient-UI handling, ranked P0-P2 gap list. **Largely unread — only the bottom-line table and four sections were consumed.** |
+| `~/.claude/subagent-results/scu-xhigh-code-review-2026-07-28.md` | **The current work queue.** 73 confirmed defects from the xhigh workflow review, every one verified by an independent skeptic, many by running the tool on the Studio. Grouped by file, with a failure scenario and verifier evidence per entry. Fifteen were surfaced in the session UI; this file is the complete set. |
+| `~/.claude/subagent-results/scu-codex-sky-reverse-engineering.md` | 1,366 lines. Codex Sol at max reasoning, disassembling Sky's 19 MB service. Full 29-code error taxonomy, 26-type IPC registry, transient-UI handling, ranked P0-P2 gap list. **Largely unread.** §9 is the parity backlog in implementation order; §10 is a ready-made 24-row parity test matrix — that is Workflow 3's battery, already written. §11 lists eleven things `scu` already does better than Sky, with file:line; keep them. |
 | `~/.claude/subagent-results/scu-grok-implementation-survey.md` | Grok 4.5 survey of axcli, axterminator, Appium mac2, XCUITest, Playwright. Source of the `AXManualAccessibility` unlock and the actionability model. |
 
 Sky's own docs are readable on disk and worth re-reading:
@@ -175,6 +175,32 @@ Safari, Slack, Finder, Music, System Settings, a Catalyst app, an Electron app),
 running the same scripted battery and recording which verbs actually work. This is where
 the real bugs are. **Run this entirely on the Mac Studio over `ssh studio`** — it opens
 windows by definition, so it must not touch the laptop.
+
+### Workflow 1 is DONE — 2026-07-28, run `wf_f05b4778-b94`
+
+It ran clean: 72 agents, 6 finder angles plus a cleanup sweep, one independent verifier per
+distinct `file:line`. 76 candidates → **73 confirmed, 1 plausible, 2 refuted**. Results in
+`~/.claude/subagent-results/scu-xhigh-code-review-2026-07-28.md`.
+
+The safety rule held, and this was audited rather than assumed — every Bash call in all 72
+transcripts was re-read afterwards. 157 `ssh studio` invocations; all four `open -a TextEdit`
+calls were inside an ssh payload; the only local mutating-verb calls were an unresolvable ref,
+an empty batch, a nonexistent app, and `waitfor`-only scripts. Nothing on the laptop was
+touched. **Putting the rule in every agent prompt, including the verifiers, is what fixed it.**
+
+The headline defects: empty arrays serialise as `{}` so every typed consumer breaks on the
+zero-result path; the `changed` fingerprint samples 220 nodes to depth 10 and is therefore
+blind over ~88% of a real app's tree, which undermines the project's entire answer to silent
+success; batch steps bypass preflight completely, including the secure-field refusal, so a
+batch `setvalue` will write into an `AXSecureTextField`; `flag()` matches option *values*, so
+the literal string `--allow-high-risk` inside a `--value` payload flips a safety gate — which
+is directly prompt-injection reachable; `--wait`/`--timeout`/batch `sleep ms` trap on bad
+input and exit 133, outside the documented 0-4 contract; and `AXEnhancedUserInterface` is now
+forced on every app on every read and never restored (the opt-in guard was deleted in 6fe39e2),
+so a read-only `axdump` permanently changes the user's app.
+
+**Next: implement.** Each fix carries a regression test that fails before and passes after.
+Then Workflow 2 (mine the Codex report) and Workflow 3 (real-app conformance, Studio only).
 
 ### Attempt 1 of Workflow 1, and why it was killed
 
