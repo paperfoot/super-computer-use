@@ -29,8 +29,13 @@ func pressElement(_ n: Node) throws {
     // Nothing activation-like worked. AXPress may still exist but be refused.
     let err = AXUIElementPerformAction(n.el, kAXPressAction as CFString)
     if err == .success { return }
+    // Name the element the way the suggestion asks for it — "run `scu actions --ref …`" is
+    // unfillable from a role alone, and a batch step that targeted by query never saw a ref.
+    // The hit-test node built from --x/--y (index -1) came from no walk, so its ref would
+    // resolve to nothing and naming it would be the wrong instruction.
+    let who = n.index >= 0 ? n.ref : n.role
     throw ActionError.fail("press_failed",
-        "no activation action succeeded on \(n.role) (AXPress error \(err.rawValue)); "
+        "no activation action succeeded on \(who) (AXPress error \(err.rawValue)); "
         + "exposed actions: \(avail.isEmpty ? "none" : avail.joined(separator: ", "))")
 }
 
@@ -64,11 +69,6 @@ func synthClick(pid: pid_t, at p: CGPoint, button: String, count: Int, windowID:
         d.postToPid(pid); usleep(40_000); u.postToPid(pid)
         if i < count { usleep(60_000) }
     }
-}
-
-/// Front-most window of a process, used to route synthetic clicks.
-func frontWindowID(for pid: pid_t) -> CGWindowID? {
-    listWindows(all: false).first { $0.pid == pid }?.id
 }
 
 /// Key chords like "cmd+shift+a" or bare names like "return".
@@ -121,8 +121,10 @@ func typeText(pid: pid_t, text: String) {
 func setValue(_ n: Node, _ v: String) throws {
     let err = AXUIElementSetAttributeValue(n.el, kAXValueAttribute as CFString, v as CFString)
     if err != .success {
+        // Not "try click+type": a background app has no first responder, so typing into it
+        // is the one recovery that cannot work here. The suggestion carries the real fix.
         throw ActionError.fail("setvalue_failed",
-            "AXSetValue rejected (\(err.rawValue)) — element may be read-only; try click+type")
+            "AXSetValue rejected (\(err.rawValue)) — the element is read-only or a rendered proxy")
     }
 }
 
@@ -134,8 +136,14 @@ func selectText(_ n: Node, needle: String, mode: String) throws {
     guard let r = full.range(of: needle) else {
         throw ActionError.fail("text_not_found", "'\(needle)' not present in element value")
     }
-    let start = full.distance(from: full.startIndex, to: r.lowerBound)
-    let len = needle.count
+    // AXSelectedTextRange is an NSRange over the UTF-16 backing store, so the offsets must be
+    // counted in code units, not Characters: one emoji earlier in the value shifts a
+    // grapheme-based offset by a unit per surrogate pair and the app silently selects the
+    // neighbouring span. Measuring the matched range rather than the needle also keeps the
+    // length right when range(of:) matches a canonically-equivalent encoding of it.
+    let u16 = full.utf16
+    let start = u16.distance(from: u16.startIndex, to: r.lowerBound)
+    let len = u16.distance(from: r.lowerBound, to: r.upperBound)
     var cf: CFRange
     switch mode {
     case "before": cf = CFRange(location: start, length: 0)
@@ -155,12 +163,17 @@ func scrollAt(pid: pid_t, p: CGPoint, dir: String, pages: Int) {
     let mag: Int32 = 6
     let dy: Int32 = dir == "up" ? mag : (dir == "down" ? -mag : 0)
     let dx: Int32 = dir == "left" ? mag : (dir == "right" ? -mag : 0)
-    for _ in 0..<max(1, pages * 3) {
-        guard let e = CGEvent(scrollWheelEvent2Source: nil, units: .line,
-                              wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0) else { break }
-        e.location = p
-        e.postToPid(pid)
-        usleep(35_000)
+    // Three wheel ticks per page, counted as a nested loop rather than `pages * 3`: pages
+    // arrives straight from argv or a batch JSON number, and an overflowing multiply traps
+    // the process — exit 133 is outside the documented 0-4 range and prints nothing.
+    for _ in 0..<max(1, pages) {
+        for _ in 0..<3 {
+            guard let e = CGEvent(scrollWheelEvent2Source: nil, units: .line,
+                                  wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0) else { return }
+            e.location = p
+            e.postToPid(pid)
+            usleep(35_000)
+        }
     }
 }
 

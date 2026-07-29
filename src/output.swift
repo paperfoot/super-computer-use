@@ -75,10 +75,16 @@ func jval(_ v: Any) -> String {
     case let s as String: return jstr(s)
     case let b as Bool:   return b ? "true" : "false"
     case let i as Int:    return "\(i)"
-    case let d as Double: return d == d.rounded() ? "\(Int(d))" : "\(d)"
-    // Ordered objects must be tested before [Any]: an array of (String, Any) tuples
-    // also satisfies [Any], and would otherwise be stringified element by element.
-    case let m as [(String, Any)]:
+    // nan/inf have no JSON spelling, and Int(d) traps on them and on anything past
+    // Int's range — a trap exits 133, outside the documented 0-4 contract.
+    case let d as Double:
+        guard d.isFinite else { return "null" }
+        return (d == d.rounded() && d.magnitude < 1e15) ? "\(Int(d))" : "\(d)"
+    // Ordered objects must be tested before [Any]: an array of (String, Any) tuples also
+    // satisfies [Any], and would otherwise be stringified element by element. The non-empty
+    // guard is load-bearing — an EMPTY array of any element type casts to [(String, Any)]
+    // vacuously, so without it every empty list renders as {} instead of [].
+    case let m as [(String, Any)] where !m.isEmpty:
         return "{" + m.map { "\(jstr($0.0)):\(jval($0.1))" }.joined(separator: ",") + "}"
     case let m as [String: Any]:
         return "{" + m.keys.sorted().map { "\(jstr($0)):\(jval(m[$0]!))" }.joined(separator: ",") + "}"
@@ -113,10 +119,16 @@ func emitText(_ text: String, key: String = "text") -> Never {
     exit(Exit.ok.rawValue)
 }
 
+/// The error object on its own. doctor renders it beside its report, so the two spellings
+/// must come from one place or they drift.
+func jerr(_ e: CLIError) -> String {
+    "{\"code\":\(jstr(e.code)),\"message\":\(jstr(e.message)),\"suggestion\":\(jstr(e.suggestion))}"
+}
+
 /// Failure. Always stderr, always with a suggestion, always a 1-4 exit code.
 func fail(_ e: CLIError) -> Never {
     if ctx.isJSON {
-        writeErr("{\"version\":\"1\",\"status\":\"error\",\"error\":{\"code\":\(jstr(e.code)),\"message\":\(jstr(e.message)),\"suggestion\":\(jstr(e.suggestion))}}")
+        writeErr("{\"version\":\"1\",\"status\":\"error\",\"error\":\(jerr(e))}")
     } else {
         writeErr("error [\(e.code)]: \(e.message)\n  → \(e.suggestion)")
     }

@@ -54,6 +54,12 @@ check_json "has non-empty commands object" "$INFO" \
   '(.commands|type=="object") and ((.commands|length) > 0)'
 check_json "every command is an object with description/args/options" "$INFO" \
   '[.commands[] | (type=="object") and has("description") and has("args") and has("options")] | all'
+# A JSON list must stay a list when it is empty. A hand-rolled serialiser that special-cases
+# key/value pairs will happily emit {} for an empty one, and then the type of a field depends
+# on its length — which breaks every typed consumer on exactly the zero-result path.
+check_json "collections are arrays even when empty" "$INFO" \
+  '([.commands[] | (.args|type=="array") and (.options|type=="array")] | all)
+   and ((.config | has("env_vars") | not) or (.config.env_vars | type=="array"))'
 check_json "global_flags documents --json and --quiet" "$INFO" \
   '(.global_flags["--json"]|type=="object") and (.global_flags["--quiet"]|type=="object")'
 check_json "exit codes 0-4 documented" "$INFO" \
@@ -62,6 +68,10 @@ check_json "envelope shape documented" "$INFO" \
   '(.envelope.version=="1") and (.envelope|has("success")) and (.envelope|has("error"))'
 check_json "config path and env_prefix documented" "$INFO" \
   '(.config.path|type=="string") and (.config.env_prefix|test("^[A-Z][A-Z0-9]*_$"))'
+# A prefix on its own tells a caller to guess. The list is what says which variables are
+# honoured -- and an empty list is a real answer: "none, do not bother setting any".
+check_json "env_vars enumerated alongside env_prefix" "$INFO" \
+  '.config.env_vars | type=="array"'
 check_json "auto_json_when_piped declared" "$INFO" \
   '.auto_json_when_piped == true'
 
@@ -74,6 +84,33 @@ check_json "piped --help is wrapped in a success envelope" "$HELP_OUT" \
   '(.status=="success") and (.version=="1")'
 check_json "--help teaches usage (Tips + Examples sections)" "$HELP_OUT" \
   '.data.usage | test("Tips:") and test("Examples:")'
+
+echo "== argv discipline =="
+# A global flag is global: `cli --json cmd` and `cli cmd --json` are the same call. A CLI
+# that reads the flag but leaves it in argv rejects the first form with "no command given",
+# and an agent that puts its flags first hits a wall on every invocation.
+if printf '%s' "$INFO" | jq -e '.argv.global_flags_anywhere == true' >/dev/null 2>&1; then
+  if "$BIN" contract 0 >/dev/null 2>&1; then
+    GLOBAL_FIRST="$("$BIN" --json contract 0 2>/dev/null)"
+    check_json "a global flag before the command still routes" "$GLOBAL_FIRST" '.status=="success"'
+  else
+    note "global_flags_anywhere declared but no 'contract' hook to probe it with"
+  fi
+  "$BIN" --json --help >/dev/null 2>&1 && pass "--help still exits 0 behind a global flag" \
+                                       || fail "--help still exits 0 behind a global flag"
+else
+  note "argv.global_flags_anywhere not declared -- flag position not probed"
+fi
+
+# `--` is the only way to pass a literal flag-shaped token, and it has to stop flag parsing
+# rather than being ignored.
+if printf '%s' "$INFO" | jq -e '.argv.end_of_flags == "--"' >/dev/null 2>&1; then
+  TERM_CODE=$("$BIN" -- --help >/dev/null 2>&1; echo $?)
+  [ "$TERM_CODE" != "0" ] && pass "-- ends flag parsing (--help after it is not a flag)" \
+                          || fail "-- ends flag parsing (--help after it is not a flag)"
+else
+  note "argv.end_of_flags not declared -- terminator not probed"
+fi
 
 echo "== command routability =="
 # Every command key in the manifest (possibly multi-word, e.g. "config show")

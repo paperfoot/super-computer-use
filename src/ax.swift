@@ -45,6 +45,10 @@ struct Node {
     let path: String        // child-index path from the app root, e.g. "0.3.2.7"
     let actionable: Bool
     let window: String      // owning window's title, or its index when untitled
+    /// AX action names, captured during the walk. Re-reading them per render costs a second
+    /// IPC round-trip on every node, and `--actions` over a 4000-node tree pays it for all
+    /// of them.
+    var actions: [String] = []
 
     var text: String { [title, value, desc].filter { !$0.isEmpty }.joined(separator: " | ") }
 
@@ -116,18 +120,39 @@ private func bulkRead(_ e: AXUIElement) -> (role: String, title: String, value: 
     return (s(0).isEmpty ? "?" : s(0), s(1), s(2), s(3), s(4), p, sz)
 }
 
+/// Set by the most recent walk when it stopped short of the whole tree — the node budget ran
+/// out, or a real subtree continued below maxDepth. Read it straight after a walk: anything
+/// that reports on what the tree contains has to be able to say when it saw only part of it.
+private(set) var lastWalkTruncated = false
+
 func collectNodes(pid: pid_t, maxDepth: Int = 18, maxNodes: Int = 4000,
                   includeMenus: Bool = false, windowFilter: CGWindowID? = nil) -> [Node] {
     var out: [Node] = []
+    var truncated = false
     // Tracks which window the walk is currently inside, so refs can be scoped to it.
     var currentWindow = ""
+    // The elements on the current recursion path, for cycle detection. Observed live:
+    // Finder's AXApplication lists *itself* as its own first child, so an undefended walk
+    // re-enters the app once per level and burns the whole node budget emitting the same
+    // node — a tree of 6000 duplicates returned as a success. Comparing against ancestors
+    // only (not everything seen) leaves legitimate repeated siblings alone.
+    var ancestors: [AXUIElement] = []
     func walk(_ e: AXUIElement, _ depth: Int, _ path: String) {
-        if depth > maxDepth || out.count >= maxNodes { return }
+        if depth > maxDepth || out.count >= maxNodes { truncated = true; return }
+        if ancestors.contains(where: { CFEqual($0, e) }) { return }
+        ancestors.append(e)
+        defer { ancestors.removeLast() }
         let a = bulkRead(e)
         let role = a.role
         if !includeMenus, role == "AXMenuBar" || role == "AXMenuBarItem" { return }
         let title = a.title, value = a.value, desc = a.desc
-        // Entering a window scopes every descendant's ref to it.
+        // Entering a window scopes every descendant's ref to it, and leaving restores the
+        // outer scope. Without the restore, everything walked after a window subtree — the
+        // whole menu bar in apps that list windows first, every sibling after a sheet — is
+        // keyed to a window it does not belong to, so closing that window silently
+        // invalidates refs it never contained.
+        let enclosing = currentWindow
+        defer { currentWindow = enclosing }
         if role == "AXWindow" || role == "AXSheet" || role == "AXDrawer" {
             currentWindow = title.isEmpty ? "win:\(path)" : title
         }
@@ -138,7 +163,7 @@ func collectNodes(pid: pid_t, maxDepth: Int = 18, maxNodes: Int = 4000,
             out.append(Node(el: e, index: out.count, role: role, ident: a.ident,
                             title: title, value: value, desc: desc,
                             pos: a.pos, size: a.size, path: path,
-                            actionable: !acts.isEmpty, window: currentWindow))
+                            actionable: !acts.isEmpty, window: currentWindow, actions: acts))
         }
         if let kids = axAttr(e, kAXChildrenAttribute as String) as? [AXUIElement] {
             for (i, k) in kids.enumerated() { walk(k, depth + 1, path.isEmpty ? "\(i)" : "\(path).\(i)") }
@@ -147,11 +172,57 @@ func collectNodes(pid: pid_t, maxDepth: Int = 18, maxNodes: Int = 4000,
     let app = AXUIElementCreateApplication(pid)
     unlockAccessibility(app, force: flag("enhanced"))
     walk(app, 0, "")
+    lastWalkTruncated = truncated
     return out
 }
 
 /// Processes we've already tried to unlock this run.
 private var unlockedPids = Set<pid_t>()
+
+/// What each unlock attribute held before we wrote it, so exit can put it back.
+private var unlockRestores: [(app: AXUIElement, attr: String, prior: CFTypeRef?)] = []
+private var unlockRestoreArmed = false
+
+/// Hand every app we touched back in the state we found it in.
+///
+/// Registered with atexit, which exit() runs — and emit()/fail() both end in exit(), so
+/// there is no path where a read-only `axdump` leaves an app permanently in enhanced
+/// accessibility mode. That flip changes how some apps render, and nobody asked for it.
+private func restoreUnlockAttributes() {
+    for r in unlockRestores {
+        let prior: CFTypeRef = r.prior ?? kCFBooleanFalse
+        _ = AXUIElementSetAttributeValue(r.app, r.attr as CFString, prior)
+    }
+    unlockRestores.removeAll()
+}
+
+/// Turn one unlock attribute on, remembering what it held first.
+///
+/// `on` says the attribute is now set, `changed` says this call is what set it. An app that
+/// already had it — a VoiceOver user, or another tool — is left alone: it costs no settle
+/// and, crucially, is not turned back off on our way out.
+private func setUnlockAttribute(_ app: AXUIElement, _ attr: String) -> (on: Bool, changed: Bool) {
+    let prior = axAttr(app, attr)
+    if (prior as? NSNumber)?.boolValue == true { return (true, false) }
+    // The status of this write is not evidence that it did nothing. Both attributes are
+    // side channels AppKit intercepts rather than real attributes, and a write that takes
+    // effect still answers kAXErrorNotImplemented (-25208) — measured against a running app,
+    // where the value read back true immediately afterwards. Requiring .success here meant
+    // the undo was never recorded, so every "read-only" dump left the app flipped for good,
+    // and the unlock never got its settle either. kAXErrorAttributeUnsupported is the one
+    // honest answer: the app has no such attribute, so nothing was written to put back.
+    let err = AXUIElementSetAttributeValue(app, attr as CFString, kCFBooleanTrue)
+    if err == .attributeUnsupported { return (false, false) }
+    unlockRestores.append((app, attr, prior))
+    if !unlockRestoreArmed {
+        unlockRestoreArmed = true
+        atexit { restoreUnlockAttributes() }
+    }
+    // Chromium publishes AXManualAccessibility write-only, so an unreadable attribute is
+    // not proof of failure — but it is not proof of success either, and reporting `on`
+    // optimistically would skip the AXEnhancedUserInterface fallback those apps still need.
+    return (on: (axAttr(app, attr) as? NSNumber)?.boolValue == true, changed: true)
+}
 
 /// Ask an app to publish a full accessibility tree.
 ///
@@ -163,16 +234,18 @@ private var unlockedPids = Set<pid_t>()
 func unlockAccessibility(_ app: AXUIElement, force: Bool = false) {
     var appPid: pid_t = 0
     AXUIElementGetPid(app, &appPid)
-    if !force && unlockedPids.contains(appPid) { return }
+    // Once per app per process, --enhanced included. A single action walks the tree half a
+    // dozen times, and forcing the write on every walk re-paid the 250ms settle each time.
+    if unlockedPids.contains(appPid) { return }
     unlockedPids.insert(appPid)
 
-    let manual = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-    var enhanced: AXError = .attributeUnsupported
-    if manual != .success || force {
-        enhanced = AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+    let manual = setUnlockAttribute(app, "AXManualAccessibility")
+    var enhanced = (on: false, changed: false)
+    if !manual.on || force {
+        enhanced = setUnlockAttribute(app, "AXEnhancedUserInterface")
     }
     // Only pay the settle cost when something actually changed.
-    if manual == .success || enhanced == .success { usleep(250_000) }
+    if manual.changed || enhanced.changed { usleep(250_000) }
 }
 
 // MARK: - actionability
@@ -187,6 +260,21 @@ struct Actionability {
     let code: String
     let reason: String
     let fix: String
+    /// Most refusals describe a UI state that will clear, so exit 1 (retry) is right. A
+    /// secure text field is not one of them: no wait and no different argument changes it,
+    /// and an agent honouring retry-on-1 would loop on the refusal forever.
+    var exit: Exit = .transient
+}
+
+/// A password field, by role or subrole.
+///
+/// Checked on its own rather than only through `checkActionable`, whose earlier
+/// disabled/hidden/zero-size returns mask it: a secure field with a zero AX frame is exactly
+/// what a browser publishes for an off-screen password input, and that path let `--no-check`
+/// carry a write into one.
+func isSecureField(_ n: Node) -> Bool {
+    let sub = axStr(n.el, kAXSubroleAttribute as String) ?? ""
+    return n.role == "AXSecureTextField" || sub == "AXSecureTextField"
 }
 
 func checkActionable(_ n: Node, pid: pid_t, forTyping: Bool = false) -> Actionability {
@@ -217,19 +305,73 @@ func checkActionable(_ n: Node, pid: pid_t, forTyping: Bool = false) -> Actionab
     if forTyping {
         // Refuse to push keystrokes at a password field. Secure input also blocks the
         // events at the OS level, so this would fail anyway — but silently.
-        let sub = axStr(n.el, kAXSubroleAttribute as String) ?? ""
-        if n.role == "AXSecureTextField" || sub == "AXSecureTextField" {
+        if isSecureField(n) {
             return Actionability(ok: false, code: "secure_field",
                 reason: "\(n.label.isEmpty ? "This field" : n.label) is a secure text field",
-                fix: "Type the password yourself. Secure input deliberately blocks synthetic keystrokes.")
+                fix: "Type the password yourself. Secure input deliberately blocks synthetic keystrokes.",
+                exit: .config)
         }
     }
     return Actionability(ok: true, code: "", reason: "", fix: "")
 }
 
-/// Cheap fingerprint of the visible tree, used to tell whether an action changed anything.
+/// True once a fingerprint walk has been truncated, i.e. `changed` was decided from part of
+/// the tree rather than all of it.
+private(set) var fingerprintPartial = false
+
+/// Fingerprint of the tree an action can reach, used to tell whether the action changed
+/// anything.
+///
+/// `changed` is this tool's whole answer to silent success, so it walks the budget `axdump`
+/// walks rather than settle's cheap poll sample. The old depth-10/220-node sample hid 88% of
+/// a Chrome tree and every row of a Finder file list, so a click that genuinely mutated the
+/// UI reported changed:false and an agent following the contract did it a second time.
 func changeFingerprint(_ pid: pid_t) -> String {
-    treeSignature(pid)
+    // The axdump budget, and never less: a caller who widened --depth/--max to reach a deep
+    // element widens this too, because that element is exactly what has to be compared.
+    let nodes = collectNodes(pid: pid, maxDepth: max(16, intOpt("depth", 16)),
+                             maxNodes: max(4000, intOpt("max", 4000)), includeMenus: true)
+    if lastWalkTruncated { fingerprintPartial = true }
+    var s = ""
+    for n in nodes {
+        // Whole text, not a prefix: an edit past character 40 of a document is exactly the
+        // mutation the caller is asking about.
+        s += "\(n.role)|\(n.ident)|\(n.text)|"
+        if let p = n.pos { s += "\(Int(p.x)),\(Int(p.y))" }
+        if let z = n.size { s += " \(Int(z.width))x\(Int(z.height))" }
+        s += "\n"
+    }
+    return shortHash(s)
+}
+
+/// Coverage caveat for the action envelope. A truncated fingerprint walk means changed:false
+/// can still be a false negative, so say so rather than let the caller assume the whole tree
+/// was compared.
+func changeCoverageFields() -> [(String, Any)] {
+    [("changedCoverage", fingerprintPartial ? "partial" : "full")]
+}
+
+/// Whether the login session's screen is locked.
+///
+/// A locked screen does not stop AX calls from succeeding — it stops apps publishing a real
+/// tree. Every symptom then points at the app: an empty dump, a `no_ax_tree` error, a
+/// suggestion to retry with `--enhanced`. None of that is true or actionable, and `doctor`
+/// reports healthy throughout. Verified live on a locked Mac, where TextEdit exposed a
+/// window and no tree.
+func screenIsLocked() -> Bool {
+    guard let d = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+    if let n = d["CGSSessionScreenIsLocked"] as? NSNumber { return n.boolValue }
+    return false
+}
+
+/// One budget for every walk whose numbering an agent can see.
+///
+/// `[N]` printed by axdump has to address the same element when it comes back as `--index`,
+/// so the producing and the consuming walk must be the same walk. They were 16/4000 and
+/// 20/6000: an index copied straight out of a dump pressed a different control, and the
+/// index_out_of_range error quoted a bound from a tree the caller had never been shown.
+func treeBudget() -> (depth: Int, max: Int) {
+    (intOpt("depth", 20), intOpt("max", 6000))
 }
 
 func requirePid() -> pid_t {
@@ -239,10 +381,30 @@ func requirePid() -> pid_t {
 }
 
 private func resolvePid() -> pid_t {
-    if let s = opt("pid"), let p = pid_t(s) { return p }
+    // A supplied-but-unparseable value must not fall through to "--pid or --app required":
+    // that tells the caller a flag is missing when it is right there in argv, and an agent
+    // following it re-sends the same malformed value forever.
+    if let s = opt("pid") {
+        guard let p = pid_t(s) else {
+            fail("bad_args", "--pid must be a process id, not '\(s)'",
+                 "Run `scu apps` to list running apps with their pids, or target by name with --app.",
+                 .input)
+        }
+        // Liveness is deliberately NOT checked here: a malformed --timeout is the caller's
+        // mistake either way, and resolving the target first would report a dead pid instead
+        // of the argument error they can actually fix. diagnoseEmptyTree does the check, at
+        // the point where an absent tree would otherwise be blamed on a live app.
+        return p
+    }
     // Convenience: --app resolves a display name to a running pid.
     if let name = opt("app") {
         let needle = name.lowercased()
+        // Every string contains the empty string, so an empty --app matched the first
+        // background daemon NSWorkspace happened to list.
+        guard !needle.isEmpty else {
+            fail("bad_args", "--app was given an empty name",
+                 "Pass the app's display name, e.g. --app Finder. Run `scu apps` to list them.", .input)
+        }
         let running = NSWorkspace.shared.runningApplications
         // Exact name or bundle id wins; fall back to a substring match.
         var hit = running.first { app -> Bool in
@@ -274,6 +436,8 @@ func resolveSuggestion(_ code: String) -> String {
     case "no_match":         return "Run `scu axdump` to see available elements, then widen the query."
     case "ambiguous_query":  return "Add nth=N to pick one, or add role=/id= to narrow the query."
     case "nth_out_of_range": return "Lower nth, or drop it to see how many elements matched."
+    case "bad_query":        return "Valid clauses are role=, id=, title=, text~= (contains), "
+                                  + "text== (exact), win=, nth=N and actionable. Note there is no bare `text=`."
     default:                 return "Run `scu axdump` for current state, then retry."
     }
 }
@@ -290,10 +454,15 @@ struct Query {
     /// Restrict matches to one window, by title substring. Essential for multi-window
     /// apps where every document exposes an identically-shaped element.
     var window: String?
+    /// Clauses whose key we do not recognise, kept so the resolver can refuse the query.
+    /// Dropped silently, `text=Send` (one character off `text~=Send`) resolved against
+    /// `role=` alone and pressed whatever that matched, reporting ok:true.
+    var unknown: [String] = []
 
     init(_ s: String) {
         for clause in s.split(separator: ";") {
             let c = clause.trimmingCharacters(in: .whitespaces)
+            if c.isEmpty { continue }
             func rhs(_ sep: String) -> String? {
                 guard let r = c.range(of: sep) else { return nil }
                 return String(c[r.upperBound...]).trimmingCharacters(in: .whitespaces)
@@ -304,8 +473,14 @@ struct Query {
             else if c.hasPrefix("text==") { exact = rhs("==") }
             else if c.hasPrefix("title=") { title = rhs("=") }
             else if c.hasPrefix("win=") { window = rhs("=")?.lowercased() }
-            else if c.hasPrefix("nth=") { nth = Int(rhs("=") ?? "") }
+            else if c.hasPrefix("nth=") {
+                // A non-numeric nth left the pick unset and turned an error into a
+                // silent "any match will do".
+                guard let n = Int(rhs("=") ?? "") else { unknown.append(c); continue }
+                nth = n
+            }
             else if c == "actionable" { actionableOnly = true }
+            else { unknown.append(c) }
         }
     }
 
@@ -323,8 +498,13 @@ struct Query {
 
 func resolveQuery(_ pid: pid_t, _ spec: String) throws -> Node {
     let q = Query(spec)
-    let nodes = collectNodes(pid: pid, maxDepth: intOpt("depth", 20),
-                             maxNodes: intOpt("max", 6000), includeMenus: flag("menus"))
+    if !q.unknown.isEmpty {
+        throw ResolveError(code: "bad_query",
+            message: "query '\(spec)' has unrecognised clause(s): \(q.unknown.joined(separator: "; "))")
+    }
+    let b = treeBudget()
+    let nodes = collectNodes(pid: pid, maxDepth: b.depth,
+                             maxNodes: b.max, includeMenus: flag("menus"))
     let hits = nodes.filter { q.matches($0) }
     if hits.isEmpty {
         throw ResolveError(code: "no_match", message: "query '\(spec)' matched nothing")
@@ -343,8 +523,9 @@ func resolveQuery(_ pid: pid_t, _ spec: String) throws -> Node {
 }
 
 func resolveNodeThrowing(_ pid: pid_t, ref: String) throws -> Node {
-    let nodes = collectNodes(pid: pid, maxDepth: intOpt("depth", 20),
-                             maxNodes: intOpt("max", 6000), includeMenus: flag("menus"))
+    let b = treeBudget()
+    let nodes = collectNodes(pid: pid, maxDepth: b.depth,
+                             maxNodes: b.max, includeMenus: flag("menus"))
     let hits = nodes.filter { $0.ref == ref }
     if hits.isEmpty {
         throw ResolveError(code: "stale_ref",
@@ -358,30 +539,40 @@ func resolveNodeThrowing(_ pid: pid_t, ref: String) throws -> Node {
     return hits[0]
 }
 
-/// Resolve a target from --ref (preferred, survives reflow) or --index (positional).
+/// Turn a resolver throw into the CLI error contract. One place, so the same dead ref
+/// reports the same message, the same suggestion and the same exit code whether it came
+/// from `scu click --ref` or from a batch step.
+func failResolve(_ error: Error) -> Never {
+    if let e = error as? ResolveError {
+        fail(e.code, e.message, resolveSuggestion(e.code), .input)
+    }
+    fail("unknown", "\(error)",
+         "Re-run with --json for the structured error, then check `scu doctor`.", .transient)
+}
+
+/// Resolve a target from --query (portable), --ref (survives reflow) or --index (positional).
 func resolveNode(_ pid: pid_t, refOverride: String? = nil, indexOverride: Int? = nil) -> Node {
     if let q = opt("query") {
-        do { return try resolveQuery(pid, q) }
-        catch let e as ResolveError { fail(e.code, e.message, resolveSuggestion(e.code), .input) }
-        catch { fail("unknown", "\(error)", "Re-run with --json for the structured error, then check `scu doctor`.", .transient) }
+        do { return try resolveQuery(pid, q) } catch { failResolve(error) }
     }
-    let nodes = collectNodes(pid: pid, maxDepth: intOpt("depth", 20),
-                             maxNodes: intOpt("max", 6000), includeMenus: flag("menus"))
     if let r = refOverride ?? opt("ref") {
-        let hits = nodes.filter { $0.ref == r }
-        if hits.isEmpty {
-            fail("stale_ref", "ref \(r) no longer present — re-run find/axdump for current state", "Re-run `scu find` or `scu axdump` and use the fresh ref.", .input)
-        }
-        if hits.count > 1 {
-            // Disambiguate by tree path when the caller supplied one.
-            if let p = opt("path"), let exact = hits.first(where: { $0.path == p }) { return exact }
-            fail("ambiguous_ref", "\(hits.count) elements match \(r)", "Pass --path with one of: \(hits.prefix(4).map { $0.path }.joined(separator: ", ")) — or use --query with nth=.", .input)
-        }
-        return hits[0]
+        do { return try resolveNodeThrowing(pid, ref: r) } catch { failResolve(error) }
+    }
+    if indexOverride == nil, let s = opt("index"), Int(s) == nil {
+        fail("bad_args", "--index must be a whole number, not '\(s)'",
+             "Run `scu axdump` and use the number in the leading [N], or prefer --query.", .input)
     }
     guard let idx = indexOverride ?? Int(opt("index") ?? "") else {
-        fail("bad_args", "--ref (preferred) or --index required", "Run `scu help` for the command reference, or `scu agent-info` for the machine-readable manifest.", .input)
+        // Name every addressing mode this resolver actually accepts, in the order the docs
+        // recommend them. Omitting --query sent the caller to the two forms the same docs
+        // tell them to avoid.
+        fail("bad_args", "--query (preferred), --ref or --index required",
+             "Example: --query 'role=AXButton;text~=Send;nth=0'. Run `scu find` for a ref, "
+             + "or `scu help` for the command reference.", .input)
     }
+    let b = treeBudget()
+    let nodes = collectNodes(pid: pid, maxDepth: b.depth,
+                             maxNodes: b.max, includeMenus: flag("menus"))
     guard idx >= 0 && idx < nodes.count else {
         fail("index_out_of_range", "index \(idx) not in 0..<\(nodes.count) — UI likely changed; re-dump", "The tree changed. Re-run `scu axdump` and use a current index, or switch to --query.", .input)
     }
@@ -394,6 +585,8 @@ func resolveNode(_ pid: pid_t, refOverride: String? = nil, indexOverride: Int? =
 // poll a cheap signature instead. Two identical consecutive samples means the UI has
 // stopped moving. A visible progress indicator forces us to keep waiting.
 
+/// Deliberately cheap and deliberately bounded: settle samples this in a loop, so it trades
+/// coverage for speed. `changed` does not — see changeFingerprint.
 func treeSignature(_ pid: pid_t) -> String {
     let nodes = collectNodes(pid: pid, maxDepth: 10, maxNodes: 220)
     var s = ""
@@ -474,17 +667,36 @@ private func settleByObserver(_ pid: pid_t, quietMs: Int, capMs: Int) -> (Bool, 
     return (false, capMs)
 }
 
+/// A millisecond argument, checked before it can reach usleep or a UInt32 conversion.
+/// `--wait 9000000` used to trap on the conversion, and a trap exits 133 with nothing on
+/// either stream — outside the 0-4 contract an agent branches on.
+private func settleMs(_ name: String, _ raw: String) -> Int {
+    guard let n = Int(raw), n >= 0, n <= 3_600_000 else {
+        fail("bad_args",
+             "--\(name) takes whole milliseconds from 0 to 3600000, not '\(raw)'",
+             // The auto-settle hint belongs only to --wait: suggesting it to someone who is
+             // already in auto mode and mistyped --quiet-ms names a switch they have on.
+             "Pass a number of milliseconds, e.g. --\(name) 500."
+             + (name == "wait" ? " `--wait auto` observes the app instead of sleeping for a "
+                               + "fixed time." : ""), .input)
+    }
+    return n
+}
+
 /// Returns (settled, elapsedMs). `--wait N` forces a fixed sleep; `--wait auto` (default)
 /// observes. `--wait 0` skips entirely.
 @discardableResult
 func settle(_ pid: pid_t) -> (Bool, Int) {
     let spec = opt("wait") ?? "auto"
-    if spec != "auto", let fixed = Int(spec) {
-        if fixed > 0 { usleep(UInt32(fixed * 1000)) }
+    if spec != "auto" {
+        let fixed = settleMs("wait", spec)
+        if fixed > 0 { usleep(UInt32(fixed) * 1000) }
         return (true, fixed)
     }
-    let cap = intOpt("wait-max", 5000)
-    let quiet = intOpt("quiet", 250)
+    let cap = settleMs("wait-max", opt("wait-max") ?? "5000")
+    // --quiet-ms, not --quiet: --quiet is the global boolean that suppresses human output,
+    // and reading the settle period from it meant tuning the wait blanked the result.
+    let quiet = settleMs("quiet-ms", opt("quiet-ms") ?? "250")
     if let r = settleByObserver(pid, quietMs: quiet, capMs: cap) { return r }
 
     // Fallback: poll a cheap tree signature until it stops changing.
@@ -547,6 +759,8 @@ final class CursorView: NSView {
 }
 
 var cursorWindow: NSWindow?
+/// Whether the visible cursor was faded in, so the fade-out matches it.
+private var cursorFaded = true
 
 /// `cg` is a global CoreGraphics point (top-left origin, as AX and CGWindowList report).
 /// Cocoa windows are bottom-left origin and per-screen, so pick the screen that actually
@@ -572,23 +786,43 @@ func showAgentCursor(at cg: CGPoint, label: String, hold: Double = 0.6) {
     w.alphaValue = 0
     w.orderFrontRegardless()
     cursorWindow = w
+    // The 15 fade frames are ~150ms of blocking run loop on top of the hold, paid on every
+    // flashed step of a batch. `--hold 0` asks for the cheapest possible flash, so it gets
+    // one: appear, no dwell, no fade either end.
+    cursorFaded = hold > 0
+    guard cursorFaded else { w.alphaValue = 1; return }
     for i in 1...8 {
         w.alphaValue = CGFloat(i) / 8
         RunLoop.current.run(until: Date().addingTimeInterval(0.010))
     }
-    if hold > 0 { RunLoop.current.run(until: Date().addingTimeInterval(hold)) }
+    RunLoop.current.run(until: Date().addingTimeInterval(hold))
 }
 func hideAgentCursor() {
     guard let w = cursorWindow else { return }
-    for i in stride(from: 6, through: 0, by: -1) {
-        w.alphaValue = CGFloat(i) / 6
-        RunLoop.current.run(until: Date().addingTimeInterval(0.010))
+    if cursorFaded {
+        for i in stride(from: 6, through: 0, by: -1) {
+            w.alphaValue = CGFloat(i) / 6
+            RunLoop.current.run(until: Date().addingTimeInterval(0.010))
+        }
     }
     w.orderOut(nil); cursorWindow = nil
 }
+
+/// `--hold` in seconds. NaN, Inf and negatives all reach RunLoop.run(until:) as a nonsense
+/// deadline, so they are refused rather than silently ignored.
+func cursorHold(_ dflt: Double = 0.45) -> Double {
+    guard let raw = opt("hold") else { return dflt }
+    guard let h = Double(raw), h.isFinite, h >= 0, h <= 30 else {
+        fail("bad_args", "--hold takes seconds from 0 to 30, not '\(raw)'",
+             "Pass seconds, e.g. --hold 0.2, or --hold 0 for the fastest flash. "
+             + "Use --no-cursor to suppress the overlay entirely.", .input)
+    }
+    return h
+}
+
 func flash(_ pt: CGPoint?, _ label: String) {
     guard !flag("no-cursor"), let p = pt else { return }
-    showAgentCursor(at: p, label: label, hold: Double(opt("hold") ?? "") ?? 0.45)
+    showAgentCursor(at: p, label: label, hold: cursorHold())
 }
 
 // MARK: - windows
@@ -628,7 +862,7 @@ func renderLine(_ n: Node, showActions: Bool) -> String {
     if let p = n.pos, let s = n.size { loc = " @\(Int(p.x)),\(Int(p.y)) \(Int(s.width))x\(Int(s.height))" }
     var acts = ""
     if showActions {
-        let a = axActions(n.el).filter { $0 != "AXShowMenu" }
+        let a = n.actions.filter { $0 != "AXShowMenu" }
         if !a.isEmpty { acts = " {\(a.map { $0.replacingOccurrences(of: "AX", with: "") }.joined(separator: ","))}" }
     }
     let id = n.ident.isEmpty ? "" : " #\(n.ident)"
@@ -661,11 +895,12 @@ private let highRiskBundles: Set<String> = [
     "com.apple.keychainaccess",
 ]
 
-/// Refuse targets that should never be automated, before anything is read or pressed.
-func enforceTargetPolicy(_ pid: pid_t) {
-    guard let app = NSRunningApplication(processIdentifier: pid) else { return }
-    let bundle = app.bundleIdentifier ?? ""
-    let name = app.localizedName ?? "that app"
+/// The policy itself, addressed by bundle id.
+///
+/// Split out from enforceTargetPolicy because not every entry point has a pid to check:
+/// `shot` captures a window it never resolves an app for, and `launch` decides whether to
+/// start something that is not running yet. Both need this same denylist.
+func enforceBundlePolicy(_ bundle: String, _ name: String) {
     if forbiddenBundles.contains(bundle) {
         fail("forbidden_target", "\(name) is a system security surface",
              "Authentication prompts and security dialogs must be handled by you directly. "
@@ -678,17 +913,26 @@ func enforceTargetPolicy(_ pid: pid_t) {
     }
 }
 
+/// Refuse targets that should never be automated, before anything is read or pressed.
+func enforceTargetPolicy(_ pid: pid_t) {
+    guard let app = NSRunningApplication(processIdentifier: pid) else { return }
+    enforceBundlePolicy(app.bundleIdentifier ?? "", app.localizedName ?? "that app")
+}
+
 /// Block synthetic keystrokes while macOS has secure input engaged.
 ///
 /// While a password field is focused anywhere on the system, the OS drops synthetic key
 /// events. Without this check `type` reports success and silently sends nothing — and in
 /// the worse case the caller believes a credential was entered.
-func enforceSecureInput(_ what: String) {
-    if IsSecureEventInputEnabled() {
-        fail("secure_input_active", "macOS secure input is active, so \(what) cannot be delivered",
-             "A password field has focus somewhere on the system. Dismiss it, then retry. "
-             + "Type credentials yourself — synthetic input is deliberately blocked here.", .transient)
-    }
+///
+/// Returns the refusal instead of exiting: a guard that called fail() directly killed a
+/// `batch` mid-script with no failedStep/completedSteps envelope, so the caller could not
+/// tell which earlier steps had already mutated the app. The caller decides how to raise it.
+func enforceSecureInput(_ what: String) -> CLIError? {
+    guard IsSecureEventInputEnabled() else { return nil }
+    return CLIError("secure_input_active", "macOS secure input is active, so \(what) cannot be delivered",
+                    "A password field has focus somewhere on the system. Dismiss it, then retry. "
+                    + "Type credentials yourself — synthetic input is deliberately blocked here.", .transient)
 }
 
 /// The element that currently has keyboard focus, which is where `type` will land.
@@ -699,15 +943,15 @@ func focusedElement(_ pid: pid_t) -> AXUIElement? {
 }
 
 /// Refuse to push keystrokes at a password field even when no element was named.
-func enforceFocusedFieldSafety(_ pid: pid_t) {
-    guard let f = focusedElement(pid) else { return }
+/// Returns the refusal rather than exiting, for the same reason as enforceSecureInput.
+func enforceFocusedFieldSafety(_ pid: pid_t) -> CLIError? {
+    guard let f = focusedElement(pid) else { return nil }
     let role = axStr(f, kAXRoleAttribute as String) ?? ""
     let sub = axStr(f, kAXSubroleAttribute as String) ?? ""
-    if role == "AXSecureTextField" || sub == "AXSecureTextField" {
-        fail("secure_field", "The focused element is a secure text field",
-             "Type the password yourself. Synthetic keystrokes into password fields are refused.",
-             .config)
-    }
+    guard role == "AXSecureTextField" || sub == "AXSecureTextField" else { return nil }
+    return CLIError("secure_field", "The focused element is a secure text field",
+                    "Type the password yourself. Synthetic keystrokes into password fields are refused.",
+                    .config)
 }
 
 // MARK: - context beyond the tree
@@ -732,16 +976,29 @@ func focusSummary(_ pid: pid_t) -> String? {
     return line
 }
 
-/// First URL found in a window subtree. Browser windows otherwise look like any other
+/// First URL published in a window subtree. Browser windows otherwise look like any other
 /// titled window, so an agent cannot tell which page it is operating on.
-func windowURL(_ e: AXUIElement, depth: Int = 0) -> String? {
-    if depth > 6 { return nil }
-    if let u = axAttr(e, "AXURL") {
-        if let url = u as? NSURL { return url.absoluteString }
-        if let s = u as? String { return s }
-    }
-    if let kids = axAttr(e, kAXChildrenAttribute as String) as? [AXUIElement] {
-        for k in kids { if let r = windowURL(k, depth: depth + 1) { return r } }
+///
+/// Breadth-first and budgeted. This runs on every axdump, and browsers publish AXURL on the
+/// window or on its web area a level or two down — whereas a depth-first walk with only a
+/// depth cap costs two AX round-trips per node all the way down, and on a three-window
+/// Finder took ~20s to decide there was no URL at all.
+func windowURL(_ window: AXUIElement, budget: inout Int) -> String? {
+    var frontier = [window]
+    var depth = 0
+    while !frontier.isEmpty, depth <= 6, budget > 0 {
+        var next: [AXUIElement] = []
+        for e in frontier {
+            if budget <= 0 { break }
+            budget -= 1
+            if let u = axAttr(e, "AXURL") {
+                if let url = u as? NSURL { return url.absoluteString }
+                if let s = u as? String { return s }
+            }
+            if let kids = axAttr(e, kAXChildrenAttribute as String) as? [AXUIElement] { next += kids }
+        }
+        frontier = next
+        depth += 1
     }
     return nil
 }
@@ -749,8 +1006,11 @@ func windowURL(_ e: AXUIElement, depth: Int = 0) -> String? {
 func urlSummary(_ pid: pid_t) -> String? {
     let app = AXUIElementCreateApplication(pid)
     guard let wins = axAttr(app, kAXWindowsAttribute as String) as? [AXUIElement] else { return nil }
+    // One budget across every window: an app that publishes no URL anywhere must not cost
+    // more than the tree dump this single header line decorates.
+    var budget = 200
     for w in wins {
-        if let u = windowURL(w) {
+        if let u = windowURL(w, budget: &budget) {
             let title = axStr(w, kAXTitleAttribute as String) ?? ""
             return "url: \(u)\(title.isEmpty ? "" : "   (\(title.prefix(60)))")"
         }
