@@ -176,7 +176,50 @@ running the same scripted battery and recording which verbs actually work. This 
 the real bugs are. **Run this entirely on the Mac Studio over `ssh studio`** — it opens
 windows by definition, so it must not touch the laptop.
 
-### Workflow 1 is DONE — 2026-07-28, run `wf_f05b4778-b94`
+### The fixes are IN — 2026-07-29, commit `b0820a4`
+
+66 of the 73 confirmed defects are fixed and pushed, plus three found while verifying them
+that the review had missed. Implementation ran as `wf_517c0c82-988`: six parallel lanes with
+exclusive file ownership, an integrator, a test lane, and adversarial verifiers.
+
+**Read this before trusting the green suite.** The Studio's screen locked partway through, and
+a locked screen stops most apps publishing an AX tree. The suite is 78 passed / 0 failed /
+**13 skipped**, and the skips include the whole TextEdit fixture — so roughly 110 behavioural
+assertions did not run. The contract, argv, safety-wording, doctor and tree-integrity sections
+did run. **Unlock the Studio and re-run `./test/regression.sh ./scu` before believing the
+behavioural fixes (D5 changed-coverage, D7 batch parity, D10 selecttext) are proven.**
+The `verify:silent-success` agent also died on a session limit, so that area has neither
+agent verification nor a full suite run behind it. It is the first thing to redo.
+
+Three defects found by hand while verifying, all now fixed and tested:
+
+1. **No cycle detection in `collectNodes`.** Finder's AXApplication lists *itself* as its
+   first child. The walk re-entered the app once per level and spent the whole node budget
+   emitting duplicates — a 6000-row tree containing nothing, returned as a success. This is
+   the purest silent success found yet, and both the review and the workflow missed it
+   because it only appears in a live tree, never in the source.
+2. **A locked screen was invisible.** `doctor` reported healthy (it checked console login,
+   which stays true when locked) and an empty tree was blamed on the app with a suggestion,
+   `--enhanced`, that cannot possibly help. Both now name the lock. This is P0 gap #4
+   (session continuity) showing up for real.
+3. **The new shot gate broke `shot`** for every off-screen window — it resolved owners with
+   `.optionIncludingWindow`, which returns nothing unless the window is on screen. 86 of 108
+   windows on the laptop. A fix that introduced a worse bug than the one it closed.
+
+Still open, from the verifiers, ranked:
+
+- **D8 residual:** `--wait` is validated *after* the work runs, and inside `batch` that
+  failure bypasses the progress envelope — so a mutation lands and the caller gets a bare
+  `bad_args` with no `completedSteps`.
+- Eight of ten batch step-failure paths still print CLI-flag advice inside a JSON script.
+- `--depth`/`--max` still go through unvalidated `intOpt`, so a bad budget yields a confident
+  zero-result success.
+- The conformance routability loop is still vacuous: `--help` short-circuits before dispatch,
+  so a manifest command with no dispatch case would still pass.
+- `agent-info` omits the `contract` command and scopes `--then` wrongly; `help` claims exit 4
+  is never returned, which `scu contract 4` disproves.
+
+### Workflow 1 (the review) — 2026-07-28, run `wf_f05b4778-b94`
 
 It ran clean: 72 agents, 6 finder angles plus a cleanup sweep, one independent verifier per
 distinct `file:line`. 76 candidates → **73 confirmed, 1 plausible, 2 refuted**. Results in
